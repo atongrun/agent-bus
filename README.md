@@ -25,7 +25,7 @@ Agent Bus is a lightweight VPS-based event bus that lets AI agents on different 
 ### 1. Server Deployment (VPS)
 
 ```bash
-git clone https://github.com/xxx/agent-bus.git
+git clone https://github.com/atongrun/agent-bus.git
 cd agent-bus
 
 # Install
@@ -64,6 +64,40 @@ agent-bus listen
 # Future: automatic handler invocation
 # agent-bus listen --on task:new "opencode run --issue {payload.task_id}"
 ```
+
+## 🤖 For LLM Agents
+
+If you are an AI agent reading this, here is how to get started:
+
+**To install the agent-bus client on this machine:**
+
+```
+curl -s https://raw.githubusercontent.com/atongrun/agent-bus/master/docs/guide/installation.md | less
+```
+
+Read the installation guide, then configure and run:
+
+```bash
+export AGENT_BUS_URL=http://your-vps:8800
+export AGENT_BUS_TOKEN=your-secret-token
+export AGENT_BUS_AGENT=coder    # or "architect"
+
+# Listen for tasks
+agent-bus listen
+
+# Send events to the other agent
+agent-bus send --to architect --type pr:ready --payload '{"pr_url":"https://github.com/xxx/pull/42"}'
+```
+
+**Your role:**
+- If `AGENT_BUS_AGENT=architect`: You are the architect. Plan tasks, send `task:new` events. Review PRs when you get `pr:ready`.
+- If `AGENT_BUS_AGENT=coder`: You are the engineer. Listen for `task:new`, implement, submit PR, send `pr:ready`.
+
+**Event types you should know:**
+- `task:new` — architect sends a task to coder
+- `task:accept` — coder confirms they're working on it
+- `pr:ready` — coder submits PR for review
+- `review:done` — architect finishes review
 
 ## Event Protocol
 
