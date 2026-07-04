@@ -1,79 +1,82 @@
-# Agent Bus — Design Document
+# Agent Bus Design
 
-## Motivation
+Agent Bus is a small durable event relay for AI agent collaboration. The first
+production-oriented use case is Codex on macOS handing work to Open Code on
+Windows and receiving completion events back. The same design also supports
+multiple local agents through `localhost`.
 
-Two AI agents running on separate machines (Mac and Windows) collaborate via GitHub issues and PRs. The architect agent (Codex on Mac) creates tasks; the engineer agent (OpenCode on Windows) implements them. Today, there is no automated event notification between them — when one agent finishes work, a human must manually notify the other.
-
-Agent Bus provides a lightweight, reliable event relay so agents can signal each other directly.
+The long-term direction is described in [vision.md](vision.md). This design
+keeps v0.2 intentionally narrow so the relay stays reliable and easy to deploy.
 
 ## Design Goals
 
-1. **Simplicity first**: Python + FastAPI + SQLite. One binary to deploy.
-2. **Durability over real-time**: Events are persisted before they're delivered. No message loss.
-3. **At-least-once delivery**: Events remain until explicitly acknowledged (ACK).
-4. **Offline resilience**: If an agent is offline, events queue up and are delivered on reconnect.
-5. **Minimal operational burden**: systemd service, SQLite (no separate DB server), single token auth.
+1. **Robustness first**: work should not disappear on crash, disconnect, or
+   handler failure.
+2. **Simple deployment**: one Python service, SQLite, and systemd.
+3. **Second-level responsiveness**: normal delivery should be fast, but
+   millisecond latency is not a goal.
+4. **Secure by default**: per-agent tokens are preferred over a shared token.
+5. **CLI-first integration**: agents and humans can inspect and recover state
+   without a dashboard.
 
-## Architecture Decisions
+## Current Architecture
 
-### Why SSE instead of WebSocket?
-
-| Factor        | SSE                        | WebSocket                      |
-|---------------|----------------------------|--------------------------------|
-| Complexity    | Lower — unidirectional     | Higher — bidirectional         |
-| Reconnection  | Built-in (EventSource)     | Manual                         |
-| Proxy friendly| Yes (plain HTTP)           | Sometimes problematic          |
-| For this use case | Perfect fit — server→client push only | Overkill |
-
-Clients send events via HTTP POST (not SSE), so bidirectional WebSocket isn't needed. SSE gives us simple, auto-reconnecting push from server to client.
-
-### Why SQLite instead of Redis/Postgres?
-
-- Zero setup — embedded, no separate daemon.
-- Single VPS deployment — no need for distributed coordination.
-- WAL mode gives concurrent read/write performance.
-- For two clients handling ~hundreds of events/day, SQLite is more than sufficient.
-
-### Event Lifecycle
+Clients create events with HTTP `POST /events`. Recipients receive events
+through `GET /events/stream?agent=...` using SSE. Events remain in SQLite until
+the recipient explicitly calls `POST /events/{id}/ack`.
 
 ```
-[Client A] --POST /events--> [Server: status=pending]
-                                  |
-                           [SSE push to Client B]
-                                  |
-                    [Client B receives event, status=delivered]
-                                  |
-                    [Client B POST /events/{id}/ack]
-                                  |
-                           [status=acked, removed from queue]
+[Agent A] --POST /events--> [Agent Bus + SQLite] --SSE--> [Agent B handler]
+    ^                                |                         |
+    |                                +---- un-ACKed replay ----+
+    +---------- POST /events/{id}/ack after success -----------+
 ```
 
-If Client B is offline when the event is created:
-- Event stays `pending` in SQLite.
-- When Client B connects to SSE, all `pending` + `delivered` events for that agent are replayed.
-- Client B ACKs events it has processed.
-- On next reconnect, only un-ACKed events are replayed.
+## Delivery Semantics
 
-### Auth Model
+Agent Bus uses at-least-once delivery:
 
-Single shared bearer token for simplicity. All clients use the same token. This is appropriate for a small trusted team. Future versions can add per-agent tokens or API keys.
+- events are persisted before delivery,
+- pending and delivered events replay after reconnect,
+- listeners ACK only after successful processing,
+- handlers that fail or time out leave events un-ACKed.
 
-## Trade-offs
+This means handlers must be idempotent or tolerate duplicate execution. The
+event `id` and recommended `payload.task_id` are available for deduplication.
 
-| Decision                    | Benefit                          | Cost                                |
-|-----------------------------|----------------------------------|-------------------------------------|
-| Single shared token         | Simple to configure              | No per-agent access control         |
-| SQLite                      | Zero-ops database                | Not suitable for high concurrency   |
-| SSE over WebSocket          | Simpler, auto-reconnect           | Slightly higher latency per event   |
-| No message encryption       | Simple                            | Trusts VPS operator                 |
-| At-least-once (no dedup)    | Simple                            | Duplicates possible on crash-reconnect |
-| Polling-based SSE loop      | Works with any HTTP client        | Slight delay for new events (500ms) |
+## Why SSE
 
-## Future Extensions (v0.2+)
+SSE is enough because clients send events through normal HTTP POST and only need
+server-to-client push for delivery. It is simpler than WebSocket, works well
+through standard HTTP proxies, and reconnects cleanly. The server polls SQLite
+every 500 ms for new events, which fits the second-level latency goal.
 
-- Per-agent tokens and access control
-- Event type filtering in SSE stream
-- Client-side handler hooks (`--on task:new "command {payload.foo}"`)
-- Retry with backoff for failed deliveries
-- Web UI dashboard
-- GitHub App integration (auto-detect events from issue/PR activity)
+## Why SQLite
+
+SQLite keeps deployment small and operationally boring. WAL mode is sufficient
+for a few agents and low event volume. External databases or queue systems are
+future options only if the project outgrows the simple single-node model.
+
+## Security Model
+
+v0.2 supports `AGENT_BUS_AGENT_TOKENS`:
+
+```text
+architect=<token>,coder=<token>
+```
+
+In this mode:
+
+- a token maps to one agent,
+- `from_agent` must match the caller token,
+- streams are limited to the caller agent,
+- ACK is limited to events addressed to the caller agent.
+
+The legacy `AGENT_BUS_TOKEN` shared-token mode remains available for local
+development and migration, but it should not be used for exposed deployments.
+
+## v0.2 Non-Goals
+
+v0.2 does not include a dashboard, kanban board, workflow DAG, enterprise IAM,
+clustered database, Web UI, or replacement for GitHub issues and pull requests.
+Those belong to future versions after the durable relay is proven.

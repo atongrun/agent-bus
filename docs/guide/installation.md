@@ -1,88 +1,80 @@
-# Agent Bus — Client Installation Guide
+# Agent Bus Installation Guide
 
-> For AI agents: follow this guide step by step to install and configure the agent-bus client.
+This guide covers the v0.2 lightweight deployment path: one server process and
+foreground CLI listeners on each agent machine.
 
-## Prerequisites
+## Server
 
-- Python 3.10+
-- pip or uv
-
-## 1. Install the client
+On a Linux VPS or local Linux machine:
 
 ```bash
-# Clone the repo
 git clone https://github.com/atongrun/agent-bus.git
 cd agent-bus
-
-# Install with pip
-pip install -e .
+bash scripts/install.sh
 ```
 
-Verify:
-```bash
-agent-bus --help
+The installer creates `/etc/agent-bus/.env` with per-agent tokens:
+
+```text
+AGENT_BUS_AGENT_TOKENS=architect=<architect-token>,coder=<coder-token>
+AGENT_BUS_HOST=0.0.0.0
+AGENT_BUS_PORT=8800
+AGENT_BUS_DB_PATH=/opt/agent-bus/data/agent-bus.db
 ```
 
-## 2. Configure
-
-Set these environment variables:
-
-```bash
-# VPS server URL (ask your human for this)
-export AGENT_BUS_URL=http://124.222.104.232:8800
-
-# Shared authentication token (ask your human for this)
-export AGENT_BUS_TOKEN=your-secret-token
-
-# Your agent identity: "architect" or "coder"
-export AGENT_BUS_AGENT=coder
-```
-
-Make them permanent (add to `~/.bashrc` or `~/.zshrc`).
-
-## 3. Test connectivity
+Check the service:
 
 ```bash
-# Health check
-curl $AGENT_BUS_URL/health
-
-# Should return: {"status":"ok"}
+sudo systemctl status agent-bus
+curl http://localhost:8800/health
 ```
 
-## 4. Start listening
+## Mac Codex Client
 
 ```bash
-agent-bus listen
+pip install agent-bus
+
+export AGENT_BUS_URL=http://your-vps:8800
+export AGENT_BUS_TOKEN=<architect-token>
+export AGENT_BUS_AGENT=architect
+
+agent-bus send --to coder --type task:new --payload-file payload.json
+agent-bus listen --agent architect --on pr:ready "echo PR ready: {payload.pr_url}"
 ```
 
-This connects to the VPS via SSE and prints incoming events. Keep it running in a terminal.
+## Windows Open Code Client
 
-## 5. Send an event
+Start with a foreground listener so failures are visible.
+
+PowerShell:
+
+```powershell
+pip install agent-bus
+
+$env:AGENT_BUS_URL = "http://your-vps:8800"
+$env:AGENT_BUS_TOKEN = "<coder-token>"
+$env:AGENT_BUS_AGENT = "coder"
+
+agent-bus listen --agent coder --on task:new "opencode run --prompt {payload.prompt}"
+```
+
+The event is ACKed only if the command exits with code `0`.
+
+## Local Multi-Agent Mode
+
+For local agents, point all clients at localhost:
 
 ```bash
-agent-bus send --to coder --type task:new \
-  --payload '{"url":"https://github.com/xxx/issues/1","task_id":"issue-1"}'
+export AGENT_BUS_URL=http://localhost:8800
+export AGENT_BUS_AGENT=verifier
+export AGENT_BUS_TOKEN=<verifier-token>
+agent-bus listen --agent verifier --on task:new "python verify.py {payload.task_id}"
 ```
-
-## Your Role
-
-| Agent | Machine | What to do |
-|-------|---------|------------|
-| `architect` | Mac | Plan tasks → send `task:new`. When you get `pr:ready` → review the PR. |
-| `coder` | Windows | Listen for `task:new`. Implement → submit PR → send `pr:ready`. |
 
 ## Troubleshooting
 
-- **`agent-bus: command not found`**: pip install didn't add to PATH. Use `python -m agent_bus_client.cli` instead.
-- **Connection refused**: Check AGENT_BUS_URL and that the VPS server is running.
-- **401 Unauthorized**: Check AGENT_BUS_TOKEN matches the server's `.env`.
-
-## Need the server?
-
-If the server isn't running yet, tell your human to deploy it on the VPS:
-```bash
-ssh your-vps
-cd /opt/agent-bus
-bash scripts/install.sh
-systemctl start agent-bus
-```
+- Connection refused: check `AGENT_BUS_URL` and `systemctl status agent-bus`.
+- `401 Unauthorized`: token is missing or wrong.
+- `403 Forbidden`: token belongs to a different agent.
+- Event repeats: the handler did not ACK, usually because it failed or timed out.
+- Complex JSON quoting fails: use `agent-bus send --payload-file payload.json`.

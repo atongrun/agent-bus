@@ -7,7 +7,7 @@ from typing import AsyncGenerator
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from server.auth import verify_token
+from server.auth import AuthContext, verify_token
 from server.db import (
     ack_event,
     check_new_events,
@@ -17,7 +17,7 @@ from server.db import (
     insert_event,
     mark_delivered,
 )
-from server.models import AckResponse, EventCreate, EventResponse
+from server.models import EventCreate
 
 router = APIRouter(prefix="/events", tags=["events"])
 
@@ -38,13 +38,22 @@ def _row_to_response(row: dict) -> dict:
     }
 
 
+def _require_agent(auth: AuthContext, agent: str, action: str) -> None:
+    """Enforce per-agent token scope while preserving legacy shared-token mode."""
+    if auth.legacy:
+        return
+    if auth.agent != agent:
+        raise HTTPException(status_code=403, detail=f"Token is not allowed to {action} for this agent")
+
+
 @router.post("", status_code=201)
 async def create_event(
     event: EventCreate,
     request: Request,
-    _: bool = Depends(verify_token),
+    auth: AuthContext = Depends(verify_token),
 ):
     """Create a new event. Returns the created event with server-assigned fields."""
+    _require_agent(auth, event.from_agent, "send events")
     payload_json = json.dumps(event.payload, ensure_ascii=False)
     row = insert_event(
         from_agent=event.from_agent,
@@ -59,13 +68,15 @@ async def create_event(
 async def acknowledge_event(
     event_id: int,
     request: Request,
-    _: bool = Depends(verify_token),
+    auth: AuthContext = Depends(verify_token),
 ):
     """Acknowledge an event, marking it as processed."""
     # Check if event exists
     row = get_event(event_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Event not found")
+
+    _require_agent(auth, row["to_agent"], "ack events")
 
     # Already acked — idempotent, return success
     if row["status"] == "acked":
@@ -87,17 +98,30 @@ async def acknowledge_event(
     }
 
 
+@router.get("/pending")
+async def list_pending_events(
+    request: Request,
+    agent: str = Query(..., min_length=1, description="Agent name to inspect"),
+    auth: AuthContext = Depends(verify_token),
+):
+    """List un-acked events for an agent without opening an SSE stream."""
+    _require_agent(auth, agent, "list pending events")
+    return [_row_to_response(row) for row in get_pending_events(agent)]
+
+
 @router.get("/stream")
 async def stream_events(
     request: Request,
     agent: str = Query(..., min_length=1, description="Agent name to receive events for"),
-    _: bool = Depends(verify_token),
+    auth: AuthContext = Depends(verify_token),
 ):
     """SSE endpoint that streams events to an agent.
 
     On connect, replays all un-acked events (pending/delivered).
     Then polls for new events every 500ms.
     """
+    _require_agent(auth, agent, "stream events")
+
     async def event_generator() -> AsyncGenerator[str, None]:
         # Phase 1: Replay all pending/delivered (un-acked) events
         pending = get_pending_events(agent)

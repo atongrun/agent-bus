@@ -83,18 +83,20 @@ CONFIG_DIR="/etc/agent-bus"
 sudo mkdir -p "$CONFIG_DIR"
 
 if [ ! -f "$CONFIG_DIR/.env" ]; then
-    # Generate a random token
-    TOKEN=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+    # Generate per-agent tokens
+    ARCHITECT_TOKEN=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+    CODER_TOKEN=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
     sudo tee "$CONFIG_DIR/.env" > /dev/null <<EOF
-AGENT_BUS_TOKEN=$TOKEN
+AGENT_BUS_AGENT_TOKENS=architect=$ARCHITECT_TOKEN,coder=$CODER_TOKEN
 AGENT_BUS_HOST=0.0.0.0
 AGENT_BUS_PORT=8800
 AGENT_BUS_DB_PATH=/opt/agent-bus/data/agent-bus.db
 EOF
     sudo chmod 600 "$CONFIG_DIR/.env"
     echo -e "${GREEN}Config created at $CONFIG_DIR/.env${NC}"
-    echo -e "${YELLOW}Your agent bus token is: $TOKEN${NC}"
-    echo "Save this token! You'll need it for clients."
+    echo -e "${YELLOW}Architect token: $ARCHITECT_TOKEN${NC}"
+    echo -e "${YELLOW}Coder token:     $CODER_TOKEN${NC}"
+    echo "Save these tokens! Each client should use only its own token."
 else
     echo "Config already exists at $CONFIG_DIR/.env"
 fi
@@ -127,7 +129,7 @@ echo -e "${GREEN}=== Installation Complete ===${NC}"
 echo ""
 echo "Client configuration (on Mac/Windows):"
 echo "  export AGENT_BUS_URL=http://$(hostname -I | awk '{print $1}'):8800"
-echo "  export AGENT_BUS_TOKEN=<your-token>"
+echo "  export AGENT_BUS_TOKEN=<agent-specific-token>"
 echo "  export AGENT_BUS_AGENT=<architect or coder>"
 echo ""
 echo "Test from client:"

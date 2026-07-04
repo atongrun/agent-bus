@@ -2,9 +2,13 @@
 
 import json
 import os
+import re
+import shlex
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import click
 import httpx
@@ -30,6 +34,97 @@ def get_headers(token: str) -> dict:
     }
 
 
+def _load_payload(payload: str, payload_file: str | None) -> dict:
+    """Load a JSON payload from an inline string or file."""
+    if payload_file:
+        try:
+            payload = Path(payload_file).read_text(encoding="utf-8")
+        except OSError as exc:
+            raise click.ClickException(f"Could not read --payload-file: {exc}") from exc
+    try:
+        loaded = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise click.ClickException(f"Payload must be valid JSON: {exc}") from exc
+    if not isinstance(loaded, dict):
+        raise click.ClickException("Payload must be a JSON object")
+    return loaded
+
+
+def _post_ack(base_url: str, token: str, event_id: int) -> bool:
+    """ACK an event and print a short diagnostic."""
+    try:
+        with httpx.Client(timeout=10) as client:
+            resp = client.post(
+                f"{base_url}/events/{event_id}/ack",
+                headers=get_headers(token),
+            )
+    except Exception as exc:
+        click.echo(f"  ACK error: {exc}", err=True)
+        return False
+
+    if resp.status_code == 200:
+        click.echo("  ACKed")
+        return True
+
+    click.echo(f"  ACK failed: {resp.status_code} {resp.text}", err=True)
+    return False
+
+
+_PLACEHOLDER_RE = re.compile(r"\{([^{}]+)\}")
+
+
+def _lookup_template_value(event_data: dict, expression: str):
+    """Resolve placeholders such as payload.task_id against an event object."""
+    current = event_data
+    for part in expression.split("."):
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        else:
+            raise KeyError(expression)
+    if isinstance(current, (dict, list)):
+        return json.dumps(current, ensure_ascii=False)
+    return str(current)
+
+
+def _quote_command_value(value: str) -> str:
+    """Quote a template value for the local shell."""
+    if os.name == "nt":
+        return subprocess.list2cmdline([value])
+    return shlex.quote(value)
+
+
+def render_command(template: str, event_data: dict) -> str:
+    """Render a handler command template for one event."""
+    def replace(match: re.Match) -> str:
+        expression = match.group(1).strip()
+        return _quote_command_value(_lookup_template_value(event_data, expression))
+
+    return _PLACEHOLDER_RE.sub(replace, template)
+
+
+def run_handler(command: str, timeout: int, workdir: str | None) -> bool:
+    """Run a handler command. Success is exit code 0 before timeout."""
+    started = time.monotonic()
+    click.echo(f"  Handler start: {command}")
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=workdir or None,
+            shell=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        click.echo(f"  Handler timeout after {timeout}s", err=True)
+        return False
+    except OSError as exc:
+        click.echo(f"  Handler start failed: {exc}", err=True)
+        return False
+
+    elapsed = time.monotonic() - started
+    click.echo(f"  Handler exit_code={completed.returncode} duration={elapsed:.1f}s")
+    return completed.returncode == 0
+
+
 @click.group()
 @click.option("--url", envvar="AGENT_BUS_URL", default="http://localhost:8800",
               help="Agent Bus server URL")
@@ -49,14 +144,12 @@ def cli(ctx, url, token):
 @click.option("--to", "to_agent", required=True, help="Recipient agent name")
 @click.option("--type", "event_type", required=True, help="Event type (e.g., task:new)")
 @click.option("--payload", default="{}", help="JSON payload string")
+@click.option("--payload-file", type=click.Path(exists=True, dir_okay=False),
+              help="Read JSON payload object from a file")
 @click.pass_context
-def send(ctx, from_agent, to_agent, event_type, payload):
+def send(ctx, from_agent, to_agent, event_type, payload, payload_file):
     """Send an event to another agent."""
-    try:
-        payload_obj = json.loads(payload)
-    except json.JSONDecodeError:
-        click.echo("Error: --payload must be valid JSON", err=True)
-        sys.exit(1)
+    payload_obj = _load_payload(payload, payload_file)
 
     body = {
         "from_agent": from_agent,
@@ -85,63 +178,122 @@ def send(ctx, from_agent, to_agent, event_type, payload):
 
 
 @cli.command()
+@click.argument("event_id", type=int)
+@click.pass_context
+def ack(ctx, event_id):
+    """Manually acknowledge an event by ID."""
+    if not _post_ack(ctx.obj["url"], ctx.obj["token"], event_id):
+        sys.exit(1)
+
+
+@cli.command()
+@click.option("--agent", envvar="AGENT_BUS_AGENT",
+              required=True, help="Agent name to inspect")
+@click.pass_context
+def pending(ctx, agent):
+    """List pending/delivered events for an agent."""
+    try:
+        with httpx.Client(timeout=10) as client:
+            resp = client.get(
+                f"{ctx.obj['url']}/events/pending",
+                params={"agent": agent},
+                headers=get_headers(ctx.obj["token"]),
+            )
+    except httpx.ConnectError:
+        click.echo(f"Error: Cannot connect to {ctx.obj['url']}", err=True)
+        sys.exit(1)
+
+    if resp.status_code != 200:
+        click.echo(f"Error: {resp.status_code} — {resp.text}", err=True)
+        sys.exit(1)
+
+    events = resp.json()
+    click.echo(json.dumps(events, indent=2, ensure_ascii=False))
+
+
+@cli.command()
 @click.option("--agent", envvar="AGENT_BUS_AGENT",
               required=True, help="Agent name to listen as")
-@click.option("--ack/--no-ack", default=True,
-              help="Auto-ACK events after receiving (default: --ack)")
+@click.option("--on", "handlers", nargs=2, multiple=True,
+              metavar="TYPE COMMAND",
+              help="Run COMMAND for events of TYPE. ACK happens only on success.")
+@click.option("--handler-timeout", default=3600, show_default=True,
+              help="Maximum seconds a handler may run before failing")
+@click.option("--workdir", type=click.Path(file_okay=False),
+              help="Working directory for handler commands")
+@click.option("--ack-on-receive", is_flag=True,
+              help="ACK immediately after printing, without running a handler")
+@click.option("--once", is_flag=True,
+              help="Process one event and exit")
+@click.option("--ack/--no-ack", "legacy_ack", default=None, hidden=True,
+              help="Deprecated; use --ack-on-receive")
 @click.pass_context
-def listen(ctx, agent, ack):
+def listen(ctx, agent, handlers, handler_timeout, workdir, ack_on_receive, once, legacy_ack):
     """Listen for events via SSE and print them to stdout.
 
     On connect, receives all un-ACKed events, then waits for new ones.
     Press Ctrl+C to stop.
     """
-    url = f"{ctx.obj['url']}/events/stream?agent={agent}&token={ctx.obj['token']}"
+    if legacy_ack is not None:
+        ack_on_receive = legacy_ack
+
+    handler_map = dict(handlers)
+    url = f"{ctx.obj['url']}/events/stream?agent={agent}"
     headers = {
+        **get_headers(ctx.obj["token"]),
         "Accept": "text/event-stream",
         "Cache-Control": "no-cache",
     }
 
     click.echo(f"Listening for events as '{agent}'...")
     click.echo(f"Server: {ctx.obj['url']}")
-    click.echo(f"Auto-ACK: {'on' if ack else 'off'}")
+    click.echo(f"Handlers: {', '.join(sorted(handler_map)) if handler_map else 'none'}")
+    click.echo(f"ACK on receive: {'on' if ack_on_receive else 'off'}")
     click.echo("---")
 
-    seen_ids = set()
+    completed_ids = set()
 
-    def process_event(event_data: dict):
+    def process_event(event_data: dict) -> bool:
         """Process a received event."""
         event_id = event_data["id"]
 
-        # Deduplicate
-        if event_id in seen_ids:
-            return
-        seen_ids.add(event_id)
+        if event_id in completed_ids:
+            return False
 
         # Timestamp for display
         now = datetime.now(timezone.utc).strftime("%H:%M:%S")
+        payload = event_data.get("payload", {})
+        task_id = payload.get("task_id") if isinstance(payload, dict) else None
 
-        click.echo(f"[{now}] {event_data['type']}")
+        click.echo(f"[{now}] {event_data['type']} id={event_id} task_id={task_id or '-'}")
         click.echo(f"  From: {event_data['from_agent']} → To: {event_data['to_agent']}")
-        click.echo(f"  ID: {event_id}  Status: {event_data['status']}")
-        click.echo(f"  Payload: {json.dumps(event_data['payload'])}")
+        click.echo(f"  Status: {event_data['status']}")
+        click.echo(f"  Payload: {json.dumps(event_data['payload'], ensure_ascii=False)}")
         click.echo("")
 
-        # Auto-ACK if enabled
-        if ack:
+        handler = handler_map.get(event_data["type"])
+        should_ack = False
+
+        if handler:
             try:
-                with httpx.Client(timeout=10) as client:
-                    resp = client.post(
-                        f"{ctx.obj['url']}/events/{event_id}/ack",
-                        headers=get_headers(ctx.obj["token"]),
-                    )
-                    if resp.status_code == 200:
-                        click.echo(f"  ✓ ACKed")
-                    else:
-                        click.echo(f"  ✗ ACK failed: {resp.status_code}")
-            except Exception as e:
-                click.echo(f"  ✗ ACK error: {e}")
+                command = render_command(handler, event_data)
+            except KeyError as exc:
+                click.echo(f"  Handler template missing field: {exc}", err=True)
+            else:
+                should_ack = run_handler(command, handler_timeout, workdir)
+        elif ack_on_receive:
+            should_ack = True
+        else:
+            click.echo("  No handler configured; leaving event unacked")
+
+        if should_ack and _post_ack(ctx.obj["url"], ctx.obj["token"], event_id):
+            completed_ids.add(event_id)
             click.echo("")
+            return True
+
+        click.echo("  Event remains unacked")
+        click.echo("")
+        return False
 
     # Retry loop for reconnection
     retry_delay = 1
@@ -174,6 +326,8 @@ def listen(ctx, agent, ack):
                                 try:
                                     event_data = json.loads(buffer)
                                     process_event(event_data)
+                                    if once:
+                                        return
                                 except json.JSONDecodeError:
                                     click.echo(f"Warning: could not parse event data: {buffer}", err=True)
                             buffer = ""

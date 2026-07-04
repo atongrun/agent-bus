@@ -1,166 +1,151 @@
 # Agent Bus
 
-**Cross-machine durable event relay for AI agent collaboration.**
+**Lightweight durable event relay for local and remote AI agent collaboration.**
 
-Agent Bus is a lightweight VPS-based event bus that lets AI agents on different machines communicate reliably. It provides durable event storage with at-least-once delivery semantics via SSE (Server-Sent Events), so no message is lost when an agent is offline.
+Agent Bus lets agents on different machines, or multiple agents on the same
+machine, exchange durable task events. It is intentionally small: Python,
+FastAPI, SQLite, SSE, and CLI commands. The design target is second-level
+responsiveness, strong recoverability, and simple deployment on a VPS or
+localhost.
+
+See [docs/vision.md](docs/vision.md) for the longer-term direction: task boards,
+workflow orchestration, human gates, and richer multi-agent coordination are
+future goals, not v0.2 scope.
 
 ## Architecture
 
 ```
 ┌──────────┐     HTTP POST /events      ┌──────────────┐     SSE /events/stream     ┌──────────┐
 │  Mac     │ ──────────────────────────▶ │              │ ──────────────────────────▶ │ Windows  │
-│  Codex   │                             │  Agent Bus   │                             │  OpenCode│
-│ Architect│ ◀────────────────────────── │  (VPS)       │ ◀────────────────────────── │ Engineer │
-└──────────┘     SSE /events/stream      │  SQLite      │     HTTP POST /events      └──────────┘
-                                          └──────────────┘
-              POST /events/{id}/ack ◀──────────┬──────────────────────────▶ POST /events/{id}/ack
+│  Codex   │                             │  Agent Bus   │                             │ Open Code│
+│Architect │ ◀────────────────────────── │  SQLite      │ ◀────────────────────────── │ Engineer │
+└──────────┘     SSE /events/stream      └──────────────┘     HTTP POST /events      └──────────┘
 ```
 
-- **Durable Queue**: All events are persisted to SQLite before delivery.
-- **At-least-once**: Events remain `pending` until explicitly ACKed. Offline agents receive them on reconnect.
-- **Simple**: Python + FastAPI + SQLite. Deploy with systemd on any Linux VPS.
+- **Durable queue**: events are persisted before delivery.
+- **At-least-once delivery**: un-ACKed events replay after reconnect.
+- **Handler-success ACK**: listener handlers ACK only after successful command exit.
+- **Agent-scoped tokens**: each agent can send, stream, and ACK only within its own scope.
 
 ## Quick Start
 
-### 1. Server Deployment (VPS)
+### 1. Server on a VPS or Localhost
 
 ```bash
 git clone https://github.com/atongrun/agent-bus.git
 cd agent-bus
-
-# Install
 bash scripts/install.sh
-
-# Configure
-cp .env.example .env
-# Edit .env: set a strong AGENT_BUS_TOKEN
-
-# Start
-sudo systemctl start agent-bus
-sudo systemctl enable agent-bus
 ```
 
-### 2. Client Usage (Mac / Windows)
+The installer creates `/etc/agent-bus/.env` with per-agent tokens:
 
 ```bash
-# Install client
-pip install agent-bus
-
-# Or from source
-cd agent-bus && pip install -e .
-
-# Configure
-export AGENT_BUS_URL=http://your-vps:8800
-export AGENT_BUS_TOKEN=your-secret-token
-export AGENT_BUS_AGENT=coder   # or "architect"
-
-# Send an event
-agent-bus send --to coder --type task:new \
-  --payload '{"url":"https://github.com/xxx/issues/12","task_id":"issue-12"}'
-
-# Listen for events
-agent-bus listen
-
-# Future: automatic handler invocation
-# agent-bus listen --on task:new "opencode run --issue {payload.task_id}"
+AGENT_BUS_AGENT_TOKENS=architect=<architect-token>,coder=<coder-token>
+AGENT_BUS_HOST=0.0.0.0
+AGENT_BUS_PORT=8800
+AGENT_BUS_DB_PATH=/opt/agent-bus/data/agent-bus.db
 ```
 
-## 🤖 For LLM Agents
+For local testing, use `AGENT_BUS_URL=http://localhost:8800`.
 
-If you are an AI agent reading this, here is how to get started:
-
-**To install the agent-bus client on this machine:**
-
-```
-curl -s https://raw.githubusercontent.com/atongrun/agent-bus/master/docs/guide/installation.md | less
-```
-
-Read the installation guide, then configure and run:
+### 2. Mac Codex Side
 
 ```bash
 export AGENT_BUS_URL=http://your-vps:8800
-export AGENT_BUS_TOKEN=your-secret-token
-export AGENT_BUS_AGENT=coder    # or "architect"
+export AGENT_BUS_TOKEN=<architect-token>
+export AGENT_BUS_AGENT=architect
 
-# Listen for tasks
-agent-bus listen
+agent-bus send --to coder --type task:new --payload '{
+  "task_id": "task-001",
+  "title": "Implement the issue",
+  "prompt": "Read the linked issue, implement it, test it, and open a PR.",
+  "url": "https://github.com/example/repo/issues/1"
+}'
 
-# Send events to the other agent
-agent-bus send --to architect --type pr:ready --payload '{"pr_url":"https://github.com/xxx/pull/42"}'
+agent-bus listen --agent architect --on pr:ready "echo PR ready: {payload.pr_url}"
 ```
 
-**Your role:**
-- If `AGENT_BUS_AGENT=architect`: You are the architect. Plan tasks, send `task:new` events. Review PRs when you get `pr:ready`.
-- If `AGENT_BUS_AGENT=coder`: You are the engineer. Listen for `task:new`, implement, submit PR, send `pr:ready`.
+### 3. Windows Open Code Side
 
-**Event types you should know:**
-- `task:new` — architect sends a task to coder
-- `task:accept` — coder confirms they're working on it
-- `pr:ready` — coder submits PR for review
-- `review:done` — architect finishes review
+Run the listener in a foreground terminal first. This keeps v0.2 easy to debug.
+
+PowerShell:
+
+```powershell
+$env:AGENT_BUS_URL = "http://your-vps:8800"
+$env:AGENT_BUS_TOKEN = "<coder-token>"
+$env:AGENT_BUS_AGENT = "coder"
+
+agent-bus listen --agent coder --on task:new "opencode run --prompt {payload.prompt}"
+```
+
+The task is ACKed only when the command exits with code `0`. If Open Code fails,
+times out, or the listener disconnects before ACK, the event remains un-ACKed
+and is replayed later.
+
+### 4. Same-Machine Agents
+
+The same protocol works locally:
+
+```bash
+export AGENT_BUS_URL=http://localhost:8800
+agent-bus listen --agent verifier --on task:new "python verify.py {payload.task_id}"
+```
+
+## Useful CLI Commands
+
+```bash
+agent-bus send --to coder --type task:new --payload-file payload.json
+agent-bus pending --agent coder
+agent-bus ack 42
+agent-bus listen --agent coder --once --on task:new "echo {payload.task_id}"
+```
+
+Handler templates can reference event fields:
+
+- `{id}`
+- `{type}`
+- `{from_agent}`
+- `{to_agent}`
+- `{payload.task_id}`
+- `{payload.title}`
+- `{payload.prompt}`
+- `{payload.url}`
 
 ## Event Protocol
 
-```json
-{
-  "id": 1,
-  "from_agent": "architect",
-  "to_agent": "coder",
-  "type": "task:new",
-  "payload": {
-    "url": "https://github.com/xxx/issues/12",
-    "task_id": "issue-12"
-  },
-  "status": "pending",
-  "created_at": "2026-07-02T12:00:00Z"
-}
-```
+Recommended v0.2 event types:
 
-### Event Types (v0.1)
+| Type | Direction | Suggested payload |
+| --- | --- | --- |
+| `task:new` | architect -> coder | `task_id`, `title`, `prompt`, `repo`, `branch`, `url` |
+| `task:accept` | coder -> architect | `task_id`, `message` |
+| `task:failed` | coder -> architect | `task_id`, `exit_code`, `summary` |
+| `pr:ready` | coder -> architect | `task_id`, `pr_url`, `summary` |
+| `review:done` | architect -> coder | `task_id`, `status`, `summary` |
 
-| Type         | Direction          | Meaning                           |
-|--------------|--------------------|-----------------------------------|
-| `task:new`   | architect → coder  | New task/issue assigned           |
-| `task:accept`| coder → architect  | Coder accepts the task            |
-| `pr:ready`   | coder → architect  | Pull request ready for review     |
-| `review:done`| architect → coder  | Review complete, feedback ready   |
+Payloads are conventions, not strict server-side schemas.
 
 ## API Endpoints
 
-| Method | Path                    | Auth   | Description                        |
-|--------|-------------------------|--------|------------------------------------|
-| POST   | `/events`               | Token  | Create a new event                 |
-| GET    | `/events/stream?agent=` | Token  | SSE stream for an agent            |
-| POST   | `/events/{id}/ack`      | Token  | Acknowledge an event               |
-| GET    | `/health`               | None   | Health check                       |
+| Method | Path | Auth | Description |
+| --- | --- | --- | --- |
+| POST | `/events` | Agent token | Create an event |
+| GET | `/events/pending?agent=` | Agent token | List un-ACKed events |
+| GET | `/events/stream?agent=` | Agent token | SSE stream |
+| POST | `/events/{id}/ack` | Agent token | ACK an event |
+| GET | `/health` | None | Health check |
 
-All authenticated endpoints require header: `Authorization: Bearer <AGENT_BUS_TOKEN>`
+All authenticated endpoints use:
 
-## Project Structure
-
-```
-agent-bus/
-├── README.md
-├── pyproject.toml
-├── .env.example
-├── server/
-│   ├── __init__.py
-│   ├── main.py          # FastAPI app entry point
-│   ├── db.py            # SQLite database layer
-│   ├── models.py        # Pydantic models
-│   ├── auth.py          # Token authentication
-│   └── events.py        # Event CRUD + SSE streaming
-├── client/
-│   ├── __init__.py
-│   └── cli.py           # CLI client (send / listen)
-├── scripts/
-│   ├── install.sh       # Server installation script
-│   └── agent-bus.service # systemd service file
-└── docs/
-    ├── design.md        # Design decisions
-    └── protocol.md      # Event protocol specification
+```text
+Authorization: Bearer <AGENT_BUS_TOKEN>
 ```
 
-## License
+## Development
 
-MIT
+```bash
+bash scripts/test.sh
+```
+
+The test script requires Python 3.11+ and `uv`.
