@@ -23,8 +23,8 @@ keeps v0.2 intentionally narrow so the relay stays reliable and easy to deploy.
    its own local runtime (OpenCode, Claude Code, Codex CLI, scripts, etc.).
 4. **Second-level responsiveness**: normal delivery should be fast, but
    millisecond latency is not a goal.
-4. **Secure by default**: per-agent tokens are preferred over a shared token.
-5. **CLI-first integration**: agents and humans can inspect and recover state
+5. **Secure by default**: per-agent tokens are preferred over a shared token.
+6. **CLI-first integration**: agents and humans can inspect and recover state
    without a dashboard.
 
 ## Current Architecture
