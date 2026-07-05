@@ -83,6 +83,11 @@ In this mode:
 The legacy `AGENT_BUS_TOKEN` shared-token mode remains available for local
 development and migration, but it should not be used for exposed deployments.
 
+Agent Bus bearer tokens are presented on every authenticated request. For
+non-local deployments, run the service behind Tailscale, HTTPS, a tunnel, or an
+equivalent private transport. Public HTTP on `8800/tcp` is not a recommended
+long-term deployment boundary because tokens would be sent over plaintext.
+
 ## v0.2 Non-Goals
 
 v0.2 does not include a dashboard, kanban board, workflow DAG, enterprise IAM,
