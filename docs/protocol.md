@@ -91,16 +91,24 @@ In per-agent token mode, only the recipient agent may ACK the event.
 
 ## Recommended Event Types
 
-| Type | Direction | Suggested payload |
-| --- | --- | --- |
-| `task:new` | architect -> coder | `task_id`, `title`, `prompt`, `repo`, `branch`, `url` |
-| `task:accept` | coder -> architect | `task_id`, `message` |
-| `task:failed` | coder -> architect | `task_id`, `exit_code`, `summary` |
-| `pr:ready` | coder -> architect | `task_id`, `pr_url`, `summary` |
-| `review:done` | architect -> coder | `task_id`, `status`, `summary` |
+The event types below are **conventions, not a required schema**. The server
+never validates payload structure — use whatever fields your workflow needs.
 
-Payloads remain free-form JSON objects. These fields are conventions for
-interoperability, not strict server-side validation.
+| Type | Typical direction | Suggested payload |
+|------|-------------------|-------------------|
+| `task:new` | planner → worker | `task_id`, `title`, `prompt`, `repo`, `branch`, `url` |
+| `task:accept` | worker → planner | `task_id`, `message` |
+| `task:failed` | worker → planner | `task_id`, `exit_code`, `summary` |
+| `pr:ready` | worker → planner | `task_id`, `pr_url`, `summary` |
+| `review:done` | planner → worker | `task_id`, `status`, `summary` |
+
+- `pr:ready` is an example from a GitHub coding workflow. For non-GitHub
+  workflows, `task:completed` with `artifact_uri` / `artifact_type` works
+  just as well.
+- The agent names `architect` / `coder` / `reviewer` are role labels, not
+  hardcoded identities. Use whatever agent names make sense for your setup.
+- Payloads are free-form JSON. Add custom types (`deploy:done`,
+  `test:passed`, etc.) at any time.
 
 ## Status Values
 

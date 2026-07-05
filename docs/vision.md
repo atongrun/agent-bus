@@ -8,8 +8,10 @@ recoverable collaboration.
 ## Near-Term Positioning
 
 In v0.2, Agent Bus is a reliable, lightweight, secure event relay. It connects
-agents such as Codex on macOS and Open Code on Windows with durable events,
-simple HTTP APIs, SSE delivery, and explicit ACKs after successful processing.
+AI agents and runtimes (such as Codex on macOS, OpenCode or Claude Code on
+Windows, Codex CLI on Linux, or local scripts and test runners) with durable
+events, simple HTTP APIs, SSE delivery, and explicit ACKs after successful
+processing.
 
 The goal is not millisecond latency. Normal delivery should happen within about
 one second, and the more important property is that failed, offline, or

@@ -1,9 +1,13 @@
 # Agent Bus Design
 
-Agent Bus is a small durable event relay for AI agent collaboration. The first
-production-oriented use case is Codex on macOS handing work to Open Code on
-Windows and receiving completion events back. The same design also supports
-multiple local agents through `localhost`.
+Agent Bus is a small, durable event relay for AI agent collaboration. Its
+primary job is reliable cross-machine handoff: an architect/planner dispatches
+tasks, worker runtimes pick them up and execute them locally, and results flow
+back over the same relay.
+
+Codex on macOS talking to OpenCode on Windows is one concrete example. The same
+design works with Claude Code on Linux, Codex CLI on macOS, a shell script on
+any machine, or multiple agents on a single localhost.
 
 The long-term direction is described in [vision.md](vision.md). This design
 keeps v0.2 intentionally narrow so the relay stays reliable and easy to deploy.
@@ -13,10 +17,12 @@ keeps v0.2 intentionally narrow so the relay stays reliable and easy to deploy.
 1. **Robustness first**: work should not disappear on crash, disconnect, or
    handler failure.
 2. **Simple deployment**: one Python service, SQLite, and systemd.
-3. **Second-level responsiveness**: normal delivery should be fast, but
+3. **Runtime-agnostic**: the server transports events. Each receiver picks
+   its own local runtime (OpenCode, Claude Code, Codex CLI, scripts, etc.).
+4. **Second-level responsiveness**: normal delivery should be fast, but
    millisecond latency is not a goal.
-4. **Secure by default**: per-agent tokens are preferred over a shared token.
-5. **CLI-first integration**: agents and humans can inspect and recover state
+5. **Secure by default**: per-agent tokens are preferred over a shared token.
+6. **CLI-first integration**: agents and humans can inspect and recover state
    without a dashboard.
 
 ## Current Architecture
@@ -27,10 +33,14 @@ the recipient explicitly calls `POST /events/{id}/ack`.
 
 ```
 [Agent A] --POST /events--> [Agent Bus + SQLite] --SSE--> [Agent B handler]
-    ^                                |                         |
-    |                                +---- un-ACKed replay ----+
+    ^                            |                         |
+    |                            +---- un-ACKed replay ----+
     +---------- POST /events/{id}/ack after success -----------+
 ```
+
+The server does **not** know or care what Agent B's handler does — it could be
+`opencode run`, `claude --print`, `codex exec`, or `bash ci-pipeline.sh`. The
+server only transports events and tracks ACK state.
 
 ## Delivery Semantics
 
@@ -77,6 +87,16 @@ development and migration, but it should not be used for exposed deployments.
 
 ## v0.2 Non-Goals
 
-v0.2 does not include a dashboard, kanban board, workflow DAG, enterprise IAM,
-clustered database, Web UI, or replacement for GitHub issues and pull requests.
-Those belong to future versions after the durable relay is proven.
+v0.2 does **not** include:
+
+- a dashboard, kanban board, or Web UI,
+- complex DAG orchestration or workflow engine,
+- built-in AI execution, RAG, or LLM integration,
+- a clustered queue or external database,
+- an agent marketplace or plugin registry,
+- enterprise multi-tenant IAM,
+- replacement for GitHub issues and pull requests.
+
+Agent Bus v0.2 fills exactly one gap: reliable, runtime-agnostic handoff
+between agents on different machines. Everything else is deferred to future
+versions after the durable relay proves itself.
