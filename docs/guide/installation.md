@@ -3,6 +3,9 @@
 This guide covers the v0.2 lightweight deployment path: one server process and
 foreground CLI listeners on each agent machine.
 
+For the rationale behind this lightweight path, see
+[../recommended-practices.md](../recommended-practices.md).
+
 ## Server
 
 On a Linux VPS or local Linux machine:
@@ -73,6 +76,15 @@ Use the Tailscale URL on clients:
 export AGENT_BUS_URL=http://<vps-tailscale-ip>:8800
 ```
 
+For the first production path, validate only this chain:
+
+```text
+Mac Codex client -> VPS Agent Bus over Tailscale -> Windows Open Code listener
+```
+
+Do not treat public-IP `8800/tcp` failure as a deployment failure when the
+Tailscale URL works.
+
 Complete one event loop before declaring the deployment ready:
 
 1. Send a test event with the sender agent token.
@@ -111,6 +123,23 @@ agent-bus listen --agent coder --on task:new "opencode run --prompt {payload.pro
 
 The event is ACKed only if the command exits with code `0`.
 
+If the Windows machine does not yet have Python 3.11 or the `agent-bus` CLI,
+use the lightweight polling listener to prove the chain first:
+
+```powershell
+$env:AGENT_BUS_URL = "http://<vps-tailscale-ip>:8800"
+$env:AGENT_BUS_TOKEN = "<coder-token>"
+$env:AGENT_BUS_AGENT = "coder"
+
+powershell -ExecutionPolicy Bypass -File .\scripts\windows-poll-listener.ps1 `
+  -OnTaskNew 'opencode run --prompt {payload.prompt}'
+```
+
+This fallback polls `pending`, runs the handler for `task:new`, and ACKs only
+when the handler exits with code `0`. It is meant as a bootstrap path; the
+normal CLI listener remains the preferred long-running path once Python 3.11+
+is installed.
+
 ## Local Multi-Agent Mode
 
 For local agents, point all clients at localhost:
@@ -125,6 +154,12 @@ agent-bus listen --agent verifier --on task:new "python verify.py {payload.task_
 ## Troubleshooting
 
 - Connection refused: check `AGENT_BUS_URL` and `systemctl status agent-bus`.
+- Mac `curl` works but Codex command fails: rerun the check from the real local
+  environment. Codex sandbox networking can produce false negatives for private
+  network URLs.
+- `agent-bus` command not found: use the project virtual environment or install
+  the CLI into the active Python environment. A configured local wrapper script
+  is preferred for repeated use.
 - Tailnet works but public access fails: this is expected for Tailscale-only
   deployments.
 - `401 Unauthorized`: token is missing or wrong.

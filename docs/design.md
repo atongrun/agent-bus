@@ -13,6 +13,9 @@ tools.
 
 The long-term direction is described in [vision.md](vision.md). This design
 keeps v0.2 intentionally narrow so the relay stays reliable and easy to deploy.
+The operating recommendations in [recommended-practices.md](recommended-practices.md)
+explain why the project should improve diagnostics and task-state clarity before
+adding heavier queue or workflow infrastructure.
 
 ## Design Goals
 
@@ -64,6 +67,25 @@ every 500 ms for new events, which fits the second-level latency goal.
 SQLite keeps deployment small and operationally boring. WAL mode is sufficient
 for a few agents and low event volume. External databases or queue systems are
 future options only if the project outgrows the simple single-node model.
+
+## Why Not a Queue Service Yet
+
+RabbitMQ, NATS JetStream, Redis Streams, Celery, and Temporal all provide useful
+patterns: durable storage, explicit ACK, redelivery, retry limits, task state,
+and observability. Agent Bus should borrow those patterns without adopting their
+operational weight too early.
+
+For the current Mac -> VPS -> Windows use case, the standard practice is:
+
+- keep a durable single-node relay,
+- ACK after successful handler completion,
+- require idempotent handlers,
+- expose pending/un-ACKed state,
+- add clear diagnostics before adding external infrastructure.
+
+Move to a dedicated queue or workflow engine only when there is sustained
+multi-worker load, complex retry routing, many independent consumers, or
+workflow state that no longer fits the SQLite relay model.
 
 ## Security Model
 
