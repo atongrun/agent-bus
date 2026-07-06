@@ -20,6 +20,11 @@ boundary and [docs/roadmap.md](docs/roadmap.md) for the staged roadmap. The
 short version: durable messaging first, Worker Adapter examples second, desktop
 or tray UI later, and no workflow engine in the core relay.
 
+See [docs/recommended-practices.md](docs/recommended-practices.md) for the
+near-term operating stance: keep the relay lightweight, borrow mature queue
+reliability habits, and improve client diagnostics before adding heavier
+infrastructure.
+
 ## Architecture
 
 ```
@@ -81,6 +86,15 @@ export AGENT_BUS_URL=http://<vps-tailscale-ip>:8800
 Keep port `8800` closed on the public internet unless it is protected by HTTPS,
 a tunnel, or another trusted private network boundary. For local testing, use
 `AGENT_BUS_URL=http://localhost:8800`.
+
+The recommended first production topology is:
+
+```text
+Mac Codex client -> VPS Agent Bus over Tailscale -> Windows Open Code listener
+```
+
+For this topology, the VPS Tailscale URL should work. The VPS public IP does not
+need to expose `8800/tcp`.
 
 ### 2. Sender Side (Planner / Architect)
 
