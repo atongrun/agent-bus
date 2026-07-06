@@ -1,15 +1,38 @@
 # Agent Bus Vision
 
-Agent Bus starts as a small, durable event relay for agent-to-agent handoff. Its
-long-term direction is broader: a lightweight coordination layer for local and
-remote agents that need reliable communication, observable task state, and
-recoverable collaboration.
+Agent Bus is a lightweight, runtime-agnostic messaging layer for distributed AI
+agents.
+
+It starts as a small durable event relay, and it should remain grounded in that
+role as the product grows. Its job is to let agents, scripts, and local
+automation endpoints communicate across machines and runtimes without forcing
+them into one vendor ecosystem, one IDE, one workflow engine, or one always-on
+desktop application.
+
+## North Star
+
+Distributed AI work increasingly spans heterogeneous endpoints:
+
+- Codex on a Mac,
+- OpenCode on Windows,
+- Claude Code or scripts on Linux,
+- a VPS relay,
+- NAS or homelab jobs,
+- GitHub Actions,
+- notification or approval clients on other devices.
+
+Agent Bus should make that network reliable through a small shared transport:
+durable events, ACK, replay, reconnect, role or endpoint addressing, CLI
+inspection, and self-hosted deployment.
 
 ## Near-Term Positioning
 
-In v0.2, Agent Bus is a reliable, lightweight, secure event relay. It connects
-agents such as Codex on macOS and Open Code on Windows with durable events,
-simple HTTP APIs, SSE delivery, and explicit ACKs after successful processing.
+In v0.x, Agent Bus is a reliable event relay. It should make the following loop
+boring:
+
+```text
+send -> persist -> deliver -> handler succeeds -> ACK -> pending empty
+```
 
 The goal is not millisecond latency. Normal delivery should happen within about
 one second, and the more important property is that failed, offline, or
@@ -17,63 +40,74 @@ interrupted work is not silently lost.
 
 ## Mid-Term Positioning
 
-Agent Bus should support both cross-machine and same-machine agent workflows.
-For example, a local planner, a local verifier, and a remote Windows executor
-should be able to coordinate through the same event model.
+The mid-term product should make heterogeneous agent work:
 
-The mid-term product should make agent work:
-
-- observable by a human,
 - recoverable after crashes and disconnects,
-- auditable through event history,
-- easy to run on localhost, a small VPS, or a private LAN.
+- inspectable from a CLI,
+- easy to run on localhost, a VPS, a NAS, or a private LAN,
+- easy to connect to local Worker Runtimes / adapters,
+- safe enough for trusted personal or small-team networks.
+
+Worker Runtime examples can grow around Agent Bus, but execution remains
+outside the relay. A Worker Runtime may call OpenCode, Codex CLI, Claude Code,
+a shell script, GitHub Actions, or a local program. Agent Bus only sees events.
 
 ## Long-Term Positioning
 
-The long-term vision is an agent coordination platform for larger collaborative
-workflows. Possible future capabilities include:
+The long-term vision is not a workflow platform. It is a durable messaging
+substrate for distributed AI agents.
 
-- a lightweight task board,
-- richer task states,
-- simple workflow orchestration,
-- agent role assignment,
-- human approval gates,
-- failure recovery and replay,
-- historical run review.
+Later product layers may include:
 
-These capabilities should grow out of the durable event model instead of
-turning the project into a heavy platform too early.
+- a lightweight console, tray app, or desktop app,
+- worker presence and task status,
+- logs, retry state, and notifications,
+- endpoint profiles and token management,
+- plugin-style runtime adapters.
+
+Those layers should sit on top of the relay boundary. They should not move Git
+operations, AI execution, prompt management, memory, DAG scheduling, or workflow
+policy into the Agent Bus core.
 
 ## Principles
 
+- Runtime-agnostic by default.
+- Messaging layer, not workflow engine.
 - Robustness before complexity.
 - Recoverability before flashy real-time behavior.
 - Second-level responsiveness is enough; lower latency is welcome but not the
   primary goal.
-- Local-first and easy deployment by default.
-- Security should be enabled by default, with advanced security added
-  gradually.
-- Prefer GitHub, files, and CLI integration before building a large all-in-one
-  platform.
+- CLI-first before UI-heavy.
+- Easy self-hosting before platform features.
+- Security boundary first: localhost, private network, HTTPS, tunnel, or
+  equivalent trusted transport.
 
-## v0.2 Non-Goals
+## Non-Goals
 
-Agent Bus v0.2 intentionally does not implement:
+Agent Bus should not implement:
 
-- a dashboard or kanban board,
-- complex DAG orchestration,
-- a clustered queue or external database,
-- a Web UI,
+- built-in Codex, OpenCode, Claude Code, Hermes, or GitHub Actions behavior,
+- server-side task execution,
+- Git clone / branch / commit / push / PR operations,
+- prompt construction or model routing,
+- shared memory or context management,
+- workflow DAGs,
+- planner / worker / reviewer as hardcoded identities,
 - enterprise multi-tenant IAM,
-- replacement for GitHub issues or pull requests.
+- a large Web UI before the CLI and relay are stable.
 
-For v0.2, Agent Bus only fills the reliable handoff gap between agents.
+Planner, worker, reviewer, architect, coder, and notifier are workflow roles.
+They are not Agent Bus primitives.
 
 ## Roadmap
 
-- v0.2: reliable agent event relay with handler-success ACK.
-- v0.3: local multi-agent workflows, pending/list/requeue, clearer task state.
-- v0.4: lightweight read-only dashboard or board.
-- v0.5: simple workflow orchestration with task graphs, human gates, and
-  failure recovery.
-- v1.0: unified local and remote agent coordination layer.
+The detailed roadmap lives in [roadmap.md](roadmap.md). The current product
+decision is:
+
+- v0.x: stabilize durable messaging, ACK, replay, diagnostics, security, and
+  Worker Adapter examples.
+- v1.0: consider a lightweight console, tray app, or desktop app for daily
+  operation.
+- v1.x: add worker status, task status, logs, retry state, and notifications.
+- Later: make runtime adapters easier to package without turning the relay into
+  a workflow engine.
