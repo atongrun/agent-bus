@@ -19,6 +19,10 @@ See [docs/product-positioning.md](docs/product-positioning.md) for the product
 boundary and [docs/roadmap.md](docs/roadmap.md) for the staged roadmap. The
 short version: durable messaging first, Worker Adapter examples second, desktop
 or tray UI later, and no workflow engine in the core relay.
+See [docs/recommended-practices.md](docs/recommended-practices.md) for the
+near-term operating stance: keep the relay lightweight, use private transport
+for exposed deployments, and improve diagnostics before adding heavier
+infrastructure.
 
 ## Architecture
 
@@ -73,6 +77,16 @@ AGENT_BUS_DB_PATH=/opt/agent-bus/data/agent-bus.db
 ```
 
 For local testing, use `AGENT_BUS_URL=http://localhost:8800`.
+
+For a small trusted network of your own machines, prefer a private transport
+such as Tailscale instead of exposing `8800/tcp` on the public internet:
+
+```text
+sender agent -> Agent Bus over Tailscale -> receiver adapter -> local tool
+```
+
+The public VPS address does not need to serve Agent Bus when the tailnet URL
+works. See [docs/guide/installation.md](docs/guide/installation.md).
 
 ### 2. Sender Side (Planner / Architect)
 
