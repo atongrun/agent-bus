@@ -8,6 +8,13 @@ FastAPI, SQLite, SSE, and CLI commands. The design target is second-level
 responsiveness, strong recoverability, and simple deployment on a VPS or
 localhost.
 
+Agent Bus is **runtime-agnostic**: it transports events between agent
+endpoints. Each receiving endpoint decides which local tool to invoke —
+OpenCode, Claude Code, Codex CLI, a shell script, or anything that accepts a
+command-line prompt. Agent Bus does not execute AI tasks, manage Git repos, or
+orchestrate workflows. See [docs/worker.md](docs/worker.md) for how Worker
+Runtimes bridge Agent Bus to local tools.
+
 See [docs/vision.md](docs/vision.md) for the longer-term direction: task boards,
 workflow orchestration, human gates, and richer multi-agent coordination are
 future goals, not v0.2 scope.
@@ -15,17 +22,35 @@ future goals, not v0.2 scope.
 ## Architecture
 
 ```
-┌──────────┐     HTTP POST /events      ┌──────────────┐     SSE /events/stream     ┌──────────┐
-│  Mac     │ ──────────────────────────▶ │              │ ──────────────────────────▶ │ Windows  │
-│  Codex   │                             │  Agent Bus   │                             │ Open Code│
-│Architect │ ◀────────────────────────── │  SQLite      │ ◀────────────────────────── │ Engineer │
-└──────────┘     SSE /events/stream      └──────────────┘     HTTP POST /events      └──────────┘
+┌──────────────────┐                         ┌──────────────────────┐
+│ Any Agent        │                         │ Worker Runtime       │
+│ Sender / Planner │                         │ Receiver / Adapter   │
+│ Human / Script   │                         │                      │
+│                  │   HTTP POST /events     │   SSE /events/stream │  ┌───────────────┐
+│  ┌────────────┐  │ ──────────────────────▶ │ ┌──────────────────┐ │  │ OpenCode      │
+│  │ agent-bus  │  │                         │ │ agent-bus listen │─┼─▶│ Claude Code   │
+│  │ send       │  │       ┌──────────┐      │ │ --on task:new    │ │  │ Codex CLI     │
+│  └────────────┘  │       │          │      │ └──────────────────┘ │  │ shell script  │
+│                  │ ◀──── │Agent Bus │ ──── │                      │  └───────────────┘
+│  ┌────────────┐  │       │ SQLite   │      │ ┌──────────────────┐ │
+│  │ agent-bus  │  │       │          │      │ │ agent-bus send   │ │
+│  │ listen     │◀─┼───────└──────────┘      │ │ (report result)  │ │
+│  └────────────┘  │  SSE /events/stream     │ └──────────────────┘ │
+└──────────────────┘                         └──────────────────────┘
+      events flow in both directions (HTTP POST + SSE)
 ```
 
 - **Durable queue**: events are persisted before delivery.
 - **At-least-once delivery**: un-ACKed events replay after reconnect.
 - **Handler-success ACK**: listener handlers ACK only after successful command exit.
 - **Agent-scoped tokens**: each agent can send, stream, and ACK only within its own scope.
+
+### Roles Are Conventions, Not Identities
+
+Agent Bus does not hardcode `architect`, `coder`, or `reviewer`. These are
+**role labels** adopted by a particular workflow. Any agent can send events.
+Any agent can receive them. A single agent can be the sender in one exchange
+and the receiver in the next. See [docs/worker.md](docs/worker.md).
 
 ## Quick Start
 
@@ -48,10 +73,13 @@ AGENT_BUS_DB_PATH=/opt/agent-bus/data/agent-bus.db
 
 For local testing, use `AGENT_BUS_URL=http://localhost:8800`.
 
-### 2. Mac Codex Side
+### 2. Sender Side (Planner / Architect)
+
+Any agent that wants to dispatch a task. The sender does not need to know
+which tool the receiver will use.
 
 ```bash
-export AGENT_BUS_URL=http://your-vps:8800
+export AGENT_BUS_URL=http://your-server:8800
 export AGENT_BUS_TOKEN=<architect-token>
 export AGENT_BUS_AGENT=architect
 
@@ -65,23 +93,30 @@ agent-bus send --to coder --type task:new --payload '{
 agent-bus listen --agent architect --on pr:ready "echo PR ready: {payload.pr_url}"
 ```
 
-### 3. Windows Open Code Side
+### 3. Receiver Side (Worker / Executor)
 
-Run the listener in a foreground terminal first. This keeps v0.2 easy to debug.
+The receiver runs `agent-bus listen` with a `--on` handler that invokes its
+local runtime. **The runtime choice is entirely up to the receiver.** Agent Bus
+has no opinion about which tool you use.
 
-PowerShell:
+```bash
+export AGENT_BUS_URL=http://your-server:8800
+export AGENT_BUS_TOKEN=<coder-token>
+export AGENT_BUS_AGENT=coder
 
-```powershell
-$env:AGENT_BUS_URL = "http://your-vps:8800"
-$env:AGENT_BUS_TOKEN = "<coder-token>"
-$env:AGENT_BUS_AGENT = "coder"
+# OpenCode — one possible runtime
+agent-bus listen --agent coder --on task:new "opencode run {payload.prompt}"
 
-agent-bus listen --agent coder --on task:new "opencode run --prompt {payload.prompt}"
+# Claude Code — another possible runtime
+agent-bus listen --agent coder --on task:new "claude --print '{payload.prompt}'"
+
+# Codex CLI — yet another
+agent-bus listen --agent coder --on task:new "codex exec '{payload.prompt}'"
 ```
 
-The task is ACKed only when the command exits with code `0`. If Open Code fails,
-times out, or the listener disconnects before ACK, the event remains un-ACKed
-and is replayed later.
+The task is ACKed only when the handler command exits with code `0`. If the
+runtime fails, times out, or the listener disconnects before ACK, the event
+remains un-ACKed and replays on reconnect.
 
 ### 4. Same-Machine Agents
 
@@ -91,6 +126,29 @@ The same protocol works locally:
 export AGENT_BUS_URL=http://localhost:8800
 agent-bus listen --agent verifier --on task:new "python verify.py {payload.task_id}"
 ```
+
+## Worker Runtime / Adapter
+
+A **Worker Runtime** is the thin shell between Agent Bus and the local tool
+that does the actual work. It is **not part of Agent Bus** — it is an example
+of what an endpoint can build on top of the event relay.
+
+```
+Worker Runtime lifecycle:
+  receive task:new → prepare workspace → invoke local tool → report result
+```
+
+See [`docs/worker.md`](docs/worker.md) for the full design. See
+[`examples/`](examples/) for reference implementations (OpenCode, generic).
+
+| Concern | Agent Bus | Worker Runtime |
+|---------|:---------:|:--------------:|
+| Event transport | ✅ | — |
+| Git operations | — | ✅ |
+| AI execution | — | ✅ |
+| Test running | — | ✅ |
+| Workspace management | — | ✅ |
+| Commit / push / PR | — | ✅ |
 
 ## Useful CLI Commands
 
@@ -103,44 +161,49 @@ agent-bus listen --agent coder --once --on task:new "echo {payload.task_id}"
 
 Handler templates can reference event fields:
 
-- `{id}`
-- `{type}`
-- `{from_agent}`
-- `{to_agent}`
-- `{payload.task_id}`
-- `{payload.title}`
-- `{payload.prompt}`
-- `{payload.url}`
+- `{id}`, `{type}`, `{from_agent}`, `{to_agent}`
+- `{payload.task_id}`, `{payload.title}`, `{payload.prompt}`, `{payload.url}`
 
 ## Event Protocol
 
-Recommended v0.2 event types:
+Recommended event types (conventions, not enforced schema):
 
-| Type | Direction | Suggested payload |
-| --- | --- | --- |
-| `task:new` | architect -> coder | `task_id`, `title`, `prompt`, `repo`, `branch`, `url` |
-| `task:accept` | coder -> architect | `task_id`, `message` |
-| `task:failed` | coder -> architect | `task_id`, `exit_code`, `summary` |
-| `pr:ready` | coder -> architect | `task_id`, `pr_url`, `summary` |
-| `review:done` | architect -> coder | `task_id`, `status`, `summary` |
+| Type | Typical direction | Suggested payload |
+|------|-------------------|-------------------|
+| `task:new` | sender → receiver | `task_id`, `title`, `prompt`, `repo`, `branch`, `url` |
+| `task:accept` | receiver → sender | `task_id`, `message` |
+| `task:failed` | receiver → sender | `task_id`, `exit_code`, `summary` |
+| `pr:ready` | receiver → sender | `task_id`, `pr_url`, `summary` |
+| `review:done` | sender → receiver | `task_id`, `status`, `summary` |
 
-Payloads are conventions, not strict server-side schemas.
+Payloads are free-form JSON. The direction labels (`sender → receiver`) are
+workflow conventions, not protocol constraints. Any agent can send any event
+type.  `pr:ready` is a GitHub coding workflow example; for non-GitHub
+workflows, `task:completed` with `artifact_uri` is a reasonable alternative.
 
 ## API Endpoints
 
 | Method | Path | Auth | Description |
-| --- | --- | --- | --- |
+|--------|------|------|-------------|
 | POST | `/events` | Agent token | Create an event |
 | GET | `/events/pending?agent=` | Agent token | List un-ACKed events |
 | GET | `/events/stream?agent=` | Agent token | SSE stream |
 | POST | `/events/{id}/ack` | Agent token | ACK an event |
 | GET | `/health` | None | Health check |
 
-All authenticated endpoints use:
+All authenticated endpoints use `Authorization: Bearer <AGENT_BUS_TOKEN>`.
 
-```text
-Authorization: Bearer <AGENT_BUS_TOKEN>
-```
+## What Agent Bus Does NOT Provide
+
+- Git operations (clone, checkout, commit, push)
+- AI model invocation or prompt construction
+- Workflow DAG or orchestration
+- Agent selection or routing strategy
+- Memory or context management
+- Dashboard or Web UI
+- Any tool-specific logic (OpenCode, Claude Code, Codex CLI, Hermes, etc.)
+
+These belong in your Worker Runtime, not in the relay.
 
 ## Development
 

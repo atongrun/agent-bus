@@ -91,16 +91,21 @@ In per-agent token mode, only the recipient agent may ACK the event.
 
 ## Recommended Event Types
 
-| Type | Direction | Suggested payload |
-| --- | --- | --- |
-| `task:new` | architect -> coder | `task_id`, `title`, `prompt`, `repo`, `branch`, `url` |
-| `task:accept` | coder -> architect | `task_id`, `message` |
-| `task:failed` | coder -> architect | `task_id`, `exit_code`, `summary` |
-| `pr:ready` | coder -> architect | `task_id`, `pr_url`, `summary` |
-| `review:done` | architect -> coder | `task_id`, `status`, `summary` |
+The event types below are **conventions, not a required schema**. The server
+never validates payload structure. Direction labels use `sender → receiver` as
+a workflow convention — any agent can play either role depending on the exchange.
 
-Payloads remain free-form JSON objects. These fields are conventions for
-interoperability, not strict server-side validation.
+| Type | Typical direction | Suggested payload |
+|------|-------------------|-------------------|
+| `task:new` | sender → receiver | `task_id`, `title`, `prompt`, `repo`, `branch`, `url` |
+| `task:accept` | receiver → sender | `task_id`, `message` |
+| `task:failed` | receiver → sender | `task_id`, `exit_code`, `summary` |
+| `pr:ready` | receiver → sender | `task_id`, `pr_url`, `summary` |
+| `review:done` | sender → receiver | `task_id`, `status`, `summary` |
+
+Payloads are free-form JSON. `pr:ready` is a GitHub coding workflow example;
+for non-GitHub workflows, `task:completed` with `artifact_uri` is a reasonable
+alternative. Add custom types (`deploy:done`, `test:passed`, etc.) at any time.
 
 ## Status Values
 

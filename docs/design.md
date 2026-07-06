@@ -1,9 +1,15 @@
 # Agent Bus Design
 
-Agent Bus is a small durable event relay for AI agent collaboration. The first
-production-oriented use case is Codex on macOS handing work to Open Code on
-Windows and receiving completion events back. The same design also supports
-multiple local agents through `localhost`.
+Agent Bus is a small, durable event relay for AI agent collaboration. Its
+primary job is reliable cross-machine handoff: a sender dispatches tasks, a
+receiver picks them up and executes them locally, and results flow back over
+the same relay.
+
+Codex on macOS handing work to OpenCode on Windows is one concrete example.
+The same design works with Claude Code on Linux, Codex CLI on macOS, a shell
+script on any machine, or multiple agents on a single localhost. See
+[docs/worker.md](worker.md) for how Worker Runtimes bridge Agent Bus to local
+tools.
 
 The long-term direction is described in [vision.md](vision.md). This design
 keeps v0.2 intentionally narrow so the relay stays reliable and easy to deploy.
@@ -13,10 +19,12 @@ keeps v0.2 intentionally narrow so the relay stays reliable and easy to deploy.
 1. **Robustness first**: work should not disappear on crash, disconnect, or
    handler failure.
 2. **Simple deployment**: one Python service, SQLite, and systemd.
-3. **Second-level responsiveness**: normal delivery should be fast, but
+3. **Runtime-agnostic**: the server transports events. Each receiver picks
+   its own local runtime (OpenCode, Claude Code, Codex CLI, scripts, etc.).
+4. **Second-level responsiveness**: normal delivery should be fast, but
    millisecond latency is not a goal.
-4. **Secure by default**: per-agent tokens are preferred over a shared token.
-5. **CLI-first integration**: agents and humans can inspect and recover state
+5. **Secure by default**: per-agent tokens are preferred over a shared token.
+6. **CLI-first integration**: agents and humans can inspect and recover state
    without a dashboard.
 
 ## Current Architecture
