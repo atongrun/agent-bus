@@ -15,9 +15,10 @@ command-line prompt. Agent Bus does not execute AI tasks, manage Git repos, or
 orchestrate workflows. See [docs/worker.md](docs/worker.md) for how Worker
 Runtimes bridge Agent Bus to local tools.
 
-See [docs/vision.md](docs/vision.md) for the longer-term direction: task boards,
-workflow orchestration, human gates, and richer multi-agent coordination are
-future goals, not v0.2 scope.
+See [docs/product-positioning.md](docs/product-positioning.md) for the product
+boundary and [docs/roadmap.md](docs/roadmap.md) for the staged roadmap. The
+short version: durable messaging first, Worker Adapter examples second, desktop
+or tray UI later, and no workflow engine in the core relay.
 
 ## Architecture
 
