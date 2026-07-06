@@ -140,6 +140,36 @@ when the handler exits with code `0`. It is meant as a bootstrap path; the
 normal CLI listener remains the preferred long-running path once Python 3.11+
 is installed.
 
+To run the handler inside a specific project directory (mirroring the main
+CLI's `--workdir`), pass `-Workdir`. The path must exist and be a directory,
+otherwise the listener errors out before polling starts; the original directory
+is restored after each handler run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\windows-poll-listener.ps1 `
+  -Workdir "D:\projects\jinri-yi-dingtou" `
+  -OnTaskNew 'opencode run --prompt {payload.prompt}'
+```
+
+`-Workdir` is a local static config: the path is never taken from a remote
+payload. If `payload.repo` / `payload.workdir` routing is added later, it must
+be resolved through a local whitelist map, never by trusting a remote absolute
+path directly.
+
+Minimal verification (no server needed): point the listener at a throwaway
+directory and a no-op handler, confirm the banner prints the resolved workdir
+and the handler runs there:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\windows-poll-listener.ps1 `
+  -Url http://localhost:8800 -Token dummy -Once `
+  -Workdir "D:\projects\jinri-yi-dingtou" `
+  -OnTaskNew 'cd'
+```
+
+`-Workdir` pointing at a missing or non-directory path must abort before any
+polling with `Workdir does not exist` / `Workdir is not a directory`.
+
 ## Local Multi-Agent Mode
 
 For local agents, point all clients at localhost:
