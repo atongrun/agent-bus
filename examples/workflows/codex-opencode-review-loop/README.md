@@ -16,8 +16,9 @@ stay in endpoint adapters.
 - `payload-task-new.json` is a sample `task:new` payload.
 - `windows-worker.ps1` wraps the shared Windows polling adapter with a static
   local `-Workdir` and an OpenCode command.
-- `mac-review-listener.sh` polls for `task:completed`, runs a local review
-  placeholder, and ACKs only after that review command succeeds.
+- `mac-review-listener.sh` polls for result events. It runs the local review
+  placeholder for `task:completed`, logs and ACKs `task:failed`, and never runs
+  the review script for failed tasks.
 
 ## Event Shape
 
@@ -61,6 +62,21 @@ stay in endpoint adapters.
 ```
 
 These are conventions, not server-enforced schemas.
+
+## Result Event Delivery
+
+Result events are at-least-once. The Windows adapter sends `task:completed`
+before ACKing the original `task:new` event. If that ACK fails, the original
+`task:new` remains replayable and the adapter may emit another `task:completed`
+for the same work on the next pass.
+
+`task:failed` can also repeat while the original `task:new` remains unacked for
+inspection or replay. Consumers should treat `payload.task_id` as the
+idempotency key for both completed and failed results.
+
+The Mac review listener handles both terminal result types: it runs review only
+for `task:completed`, logs `task_id`, `error`, and `exit_code` for `task:failed`,
+and ACKs each result event after its local handling succeeds.
 
 ## Mac Sender And Review Listener
 
