@@ -1,0 +1,8 @@
+{
+  "task_id": "review-loop-demo-001",
+  "title": "Make a small change and report back",
+  "prompt": "Inspect the repo, make the smallest safe change, run checks, and summarize the result.",
+  "repo": "atongrun/agent-bus",
+  "branch": "codex/example-task",
+  "requester": "mac-codex"
+}
