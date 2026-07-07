@@ -1,7 +1,10 @@
 # Agent Bus Installation Guide
 
 This guide covers the v0.2 lightweight deployment path: one server process and
-foreground CLI listeners on each agent machine.
+foreground CLI listeners or external adapters on each agent machine.
+
+For the rationale behind this lightweight path, see
+[../recommended-practices.md](../recommended-practices.md).
 
 ## Server
 
@@ -16,7 +19,7 @@ bash scripts/install.sh
 The installer creates `/etc/agent-bus/.env` with per-agent tokens:
 
 ```text
-AGENT_BUS_AGENT_TOKENS=architect=<architect-token>,coder=<coder-token>
+AGENT_BUS_AGENT_TOKENS=sender=<sender-token>,receiver=<receiver-token>
 AGENT_BUS_HOST=0.0.0.0
 AGENT_BUS_PORT=8800
 AGENT_BUS_DB_PATH=/opt/agent-bus/data/agent-bus.db
@@ -29,36 +32,125 @@ sudo systemctl status agent-bus
 curl http://localhost:8800/health
 ```
 
-## Mac Codex Client
+### Recommended VPS Network Boundary: Tailscale
+
+For a VPS shared by your own machines, prefer Tailscale-only access instead of
+exposing `8800/tcp` to the public internet. Agent Bus can keep listening on
+`0.0.0.0`; the firewall should limit inbound access to the private network
+interface.
+
+Check Tailscale and find the VPS tailnet address:
+
+```bash
+tailscale status
+tailscale ip -4
+```
+
+If `ufw` is enabled, allow Agent Bus only on `tailscale0`:
+
+```bash
+sudo ufw allow in on tailscale0 to any port 8800 proto tcp
+```
+
+If a previous rule exposed `8800/tcp` publicly, remove that public rule after
+the Tailscale rule is in place:
+
+```bash
+sudo ufw delete allow 8800/tcp
+```
+
+Also remove any cloud-provider security-group rule that exposes public
+`8800/tcp`. Keep SSH and existing remote-access services untouched.
+
+Verify both local and tailnet access:
+
+```bash
+curl http://127.0.0.1:8800/health
+curl http://<vps-tailscale-ip>:8800/health
+```
+
+From a non-tailnet path, `http://<vps-public-ip>:8800/health` should fail. Do
+not treat public-IP `8800/tcp` failure as a deployment failure when the
+Tailscale URL works.
+
+Use the Tailscale URL on clients:
+
+```bash
+export AGENT_BUS_URL=http://<vps-tailscale-ip>:8800
+```
+
+One concrete production path can look like this:
+
+```text
+planning agent -> VPS Agent Bus over Tailscale -> worker adapter -> local tool
+```
+
+This is an example topology, not a built-in Agent Bus role model. The endpoint
+tools can be Codex, OpenCode, Claude Code, shell scripts, test runners, or any
+other local runtime.
+
+Complete one event loop before declaring the deployment ready:
+
+1. Send a test event with the sender agent token.
+2. Query `pending` with the recipient agent token.
+3. ACK the event with the recipient agent token.
+4. Query `pending` again and confirm it is empty.
+
+## Sender Client
+
+Any agent or script can send events. The sender does not need to know which
+runtime the receiver will invoke.
 
 ```bash
 pip install agent-bus
 
-export AGENT_BUS_URL=http://your-vps:8800
-export AGENT_BUS_TOKEN=<architect-token>
-export AGENT_BUS_AGENT=architect
+export AGENT_BUS_URL=http://<vps-tailscale-ip>:8800
+export AGENT_BUS_TOKEN=<sender-token>
+export AGENT_BUS_AGENT=sender
 
-agent-bus send --to coder --type task:new --payload-file payload.json
-agent-bus listen --agent architect --on pr:ready "echo PR ready: {payload.pr_url}"
+agent-bus send --to receiver --type task:new --payload-file payload.json
+agent-bus listen --agent sender --on task:completed "echo completed: {payload.artifact_uri}"
 ```
 
-## Windows Open Code Client
+## Receiver Adapter
 
-Start with a foreground listener so failures are visible.
+The receiver listens for events and invokes a local runtime. Agent Bus only
+delivers the event and tracks ACK state; Git, AI execution, workspace setup,
+and PR creation belong to the adapter.
 
-PowerShell:
-
-```powershell
+```bash
 pip install agent-bus
 
-$env:AGENT_BUS_URL = "http://your-vps:8800"
-$env:AGENT_BUS_TOKEN = "<coder-token>"
-$env:AGENT_BUS_AGENT = "coder"
+export AGENT_BUS_URL=http://<vps-tailscale-ip>:8800
+export AGENT_BUS_TOKEN=<receiver-token>
+export AGENT_BUS_AGENT=receiver
 
-agent-bus listen --agent coder --on task:new "opencode run --prompt {payload.prompt}"
+# OpenCode is one possible runtime, not a required dependency.
+agent-bus listen --agent receiver --on task:new "opencode run --prompt '{payload.prompt}'"
 ```
 
-The event is ACKed only if the command exits with code `0`.
+The event is ACKed only if the handler command exits with code `0`.
+
+### Optional Windows Polling Adapter
+
+If the Windows machine does not yet have Python 3.11 or the `agent-bus` CLI,
+use the example polling adapter to prove the private-network event loop first:
+
+```powershell
+$env:AGENT_BUS_URL = "http://<vps-tailscale-ip>:8800"
+$env:AGENT_BUS_TOKEN = "<receiver-token>"
+$env:AGENT_BUS_AGENT = "receiver"
+
+.\examples\windows\poll-listener.ps1 `
+  -Command opencode `
+  -CommandArgs @("run", "--prompt")
+```
+
+This adapter polls `pending`, invokes the configured command with
+`payload.prompt` as a data argument, and ACKs only when the handler exits with
+code `0`. It is a bootstrap example outside Agent Bus core. The normal CLI
+listener remains the preferred long-running path once Python 3.11+ and the
+`agent-bus` package are installed.
 
 ## Local Multi-Agent Mode
 
@@ -74,6 +166,10 @@ agent-bus listen --agent verifier --on task:new "python verify.py {payload.task_
 ## Troubleshooting
 
 - Connection refused: check `AGENT_BUS_URL` and `systemctl status agent-bus`.
+- Tailnet works but public access fails: expected for Tailscale-only
+  deployments.
+- Public access works unexpectedly: remove firewall or cloud security-group
+  rules that expose `8800/tcp`.
 - `401 Unauthorized`: token is missing or wrong.
 - `403 Forbidden`: token belongs to a different agent.
 - Event repeats: the handler did not ACK, usually because it failed or timed out.
