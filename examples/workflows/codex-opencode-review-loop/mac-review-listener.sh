@@ -74,6 +74,16 @@ def run_review(payload):
             pass
 
 
+def log_failed_task(payload):
+    task_id = payload.get("task_id", "")
+    error = payload.get("error", "")
+    exit_code = payload.get("exit_code", "")
+    print(
+        f"task failed task_id={task_id} exit_code={exit_code} error={error}",
+        flush=True,
+    )
+
+
 print(f"Agent Bus Mac review listener agent={agent} url={url}", flush=True)
 
 while True:
@@ -89,21 +99,29 @@ while True:
 
     for event in events:
         payload = event.get("payload") or {}
-        task_id = payload.get("task_id", "") if isinstance(payload, dict) else ""
+        if not isinstance(payload, dict):
+            payload = {}
+
+        task_id = payload.get("task_id", "")
         event_type = event.get("type")
         event_id = event.get("id")
         print(f"event id={event_id} type={event_type} task_id={task_id}", flush=True)
 
-        if event_type != "task:completed":
-            print(f"skip id={event_id}: no handler for type={event_type}", flush=True)
+        if event_type == "task:completed":
+            exit_code = run_review(payload)
+            print(f"review exit_code={exit_code}", flush=True)
+            if exit_code == 0:
+                ack(event_id)
+            else:
+                print(f"leave unacked id={event_id}", flush=True)
             continue
 
-        exit_code = run_review(payload)
-        print(f"review exit_code={exit_code}", flush=True)
-        if exit_code == 0:
+        if event_type == "task:failed":
+            log_failed_task(payload)
             ack(event_id)
-        else:
-            print(f"leave unacked id={event_id}", flush=True)
+            continue
+
+        print(f"skip id={event_id}: no handler for type={event_type}", flush=True)
 
     if once:
         break
