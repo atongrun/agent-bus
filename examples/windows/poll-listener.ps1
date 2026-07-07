@@ -153,7 +153,12 @@ while ($true) {
             if ($exitCode -eq 0) {
                 $completed = New-ResultPayload -Event $event -Status "completed" -Summary "Command exited 0"
                 Send-AgentBusEvent -ToAgent $replyTo -Type "task:completed" -Payload $completed
-                Ack-Event -EventId $event.id
+                try {
+                    Ack-Event -EventId $event.id
+                } catch {
+                    Write-Host "completed sent but ACK failed id=$($event.id): $($_.Exception.Message)"
+                    Write-Host "leave unacked id=$($event.id)"
+                }
             } else {
                 $errorText = "Command exited $exitCode"
                 $failed = New-ResultPayload -Event $event -Status "failed" -ErrorMessage $errorText -ExitCode $exitCode
