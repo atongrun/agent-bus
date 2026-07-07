@@ -92,7 +92,7 @@ export AGENT_BUS_AGENT=mac-codex
 Start the review listener before dispatching work:
 
 ```bash
-./examples/workflows/codex-opencode-review-loop/mac-review-listener.sh
+bash ./examples/workflows/codex-opencode-review-loop/mac-review-listener.sh
 ```
 
 By default, the listener only prints a placeholder review message. To plug in a
@@ -101,7 +101,7 @@ JSON file containing the `task:completed` payload.
 
 ```bash
 export AGENT_BUS_REVIEW_SCRIPT=/absolute/path/to/review.sh
-./examples/workflows/codex-opencode-review-loop/mac-review-listener.sh
+bash ./examples/workflows/codex-opencode-review-loop/mac-review-listener.sh
 ```
 
 A future wrapper can replace that review script with `codex review` or
