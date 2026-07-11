@@ -382,10 +382,12 @@ def doctor(ctx, agent, send_test):
               help="Process one event and exit")
 @click.option("--exit-after-idle", default=None, type=int,
               help="Exit after N seconds without receiving any events")
+@click.option("--max-event-attempts", default=3, type=int, show_default=True,
+              help="Skip an event after N consecutive processing failures (poison event protection)")
 @click.option("--ack/--no-ack", "legacy_ack", default=None, hidden=True,
               help="Deprecated; use --ack-on-receive")
 @click.pass_context
-def listen(ctx, agent, handlers, handler_timeout, workdir, ack_on_receive, once, legacy_ack, exit_after_idle):
+def listen(ctx, agent, handlers, handler_timeout, workdir, ack_on_receive, once, legacy_ack, exit_after_idle, max_event_attempts):
     """Listen for events via SSE and print them to stdout.
 
     On connect, receives all un-ACKed events, then waits for new ones.
@@ -411,12 +413,18 @@ def listen(ctx, agent, handlers, handler_timeout, workdir, ack_on_receive, once,
     click.echo("---")
 
     completed_ids = set()
+    failure_counts = {}
+    skipped_ids = set()
 
     def process_event(event_data: dict) -> bool:
         """Process a received event."""
         event_id = event_data["id"]
 
         if event_id in completed_ids:
+            return False
+
+        if event_id in skipped_ids:
+            click.echo(f"  Skipping poison event {event_id} (previously skipped after {max_event_attempts} attempts)")
             return False
 
         # Built-in control:shutdown — ACK and exit gracefully
@@ -455,8 +463,17 @@ def listen(ctx, agent, handlers, handler_timeout, workdir, ack_on_receive, once,
                 command = render_command(handler, event_data)
             except KeyError as exc:
                 click.echo(f"  Handler template missing field: {exc}", err=True)
+                failure_counts[event_id] = failure_counts.get(event_id, 0) + 1
+                if failure_counts[event_id] >= max_event_attempts:
+                    skipped_ids.add(event_id)
+                    click.echo(f"  Skipping poison event {event_id} after {max_event_attempts} consecutive failed attempts (handler template error)")
             else:
                 should_ack = run_handler(command, handler_timeout, workdir)
+                if not should_ack:
+                    failure_counts[event_id] = failure_counts.get(event_id, 0) + 1
+                    if failure_counts[event_id] >= max_event_attempts:
+                        skipped_ids.add(event_id)
+                        click.echo(f"  Skipping poison event {event_id} after {max_event_attempts} consecutive failed attempts")
         elif ack_on_receive:
             should_ack = True
         else:
@@ -464,6 +481,7 @@ def listen(ctx, agent, handlers, handler_timeout, workdir, ack_on_receive, once,
 
         if should_ack and _post_ack(ctx.obj["url"], ctx.obj["token"], event_id):
             completed_ids.add(event_id)
+            failure_counts.pop(event_id, None)
             click.echo("")
             return True
 
@@ -506,6 +524,16 @@ def listen(ctx, agent, handlers, handler_timeout, workdir, ack_on_receive, once,
                                         return
                                 except json.JSONDecodeError:
                                     click.echo(f"Warning: could not parse event data: {buffer}", err=True)
+                                    if current_id is not None:
+                                        try:
+                                            eid = int(current_id)
+                                        except (ValueError, TypeError):
+                                            pass
+                                        else:
+                                            failure_counts[eid] = failure_counts.get(eid, 0) + 1
+                                            if failure_counts[eid] >= max_event_attempts:
+                                                skipped_ids.add(eid)
+                                                click.echo(f"  Skipping poison event {eid} after {max_event_attempts} consecutive failed attempts (JSON decode error)")
                             buffer = ""
                             current_id = None
                             current_event = None
