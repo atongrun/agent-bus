@@ -189,8 +189,10 @@ def ack(ctx, event_id):
 @cli.command()
 @click.option("--agent", envvar="AGENT_BUS_AGENT",
               required=True, help="Agent name to inspect")
+@click.option("--count", is_flag=True,
+              help="Print only the number of pending events")
 @click.pass_context
-def pending(ctx, agent):
+def pending(ctx, agent, count):
     """List pending/delivered events for an agent."""
     try:
         with httpx.Client(timeout=10) as client:
@@ -208,7 +210,10 @@ def pending(ctx, agent):
         sys.exit(1)
 
     events = resp.json()
-    click.echo(json.dumps(events, indent=2, ensure_ascii=False))
+    if count:
+        click.echo(len(events))
+    else:
+        click.echo(json.dumps(events, indent=2, ensure_ascii=False))
 
 
 @cli.command()
