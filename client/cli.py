@@ -213,7 +213,162 @@ def pending(ctx, agent):
 
 @cli.command()
 @click.option("--agent", envvar="AGENT_BUS_AGENT",
-              required=True, help="Agent name to listen as")
+              required=False, default="",
+              help="Agent name to diagnose (defaults to AGENT_BUS_AGENT)")
+@click.option("--send-test", is_flag=True,
+              help="Also run a send->pending->ack round-trip self-test (writes a real event)")
+@click.pass_context
+def doctor(ctx, agent, send_test):
+    """Diagnose configuration and connectivity to the Agent Bus server.
+
+    Checks, in order: config present, server /health reachable, auth scope
+    valid (can list own pending events). With --send-test also performs a
+    real send->pending->ack round-trip to the agent itself and cleans up the
+    test event. Exits 0 iff all checks pass; non-zero otherwise.
+    """
+    url = ctx.obj["url"]
+    token = ctx.obj["token"]
+    total = 4 if send_test else 3
+    all_ok = True
+
+    def report(idx, name, passed):
+        click.echo(f"[{idx}/{total}] {name}: {'PASS' if passed else 'FAIL'}")
+
+    # --- 1. Config present (URL / token / agent) ---
+    config_ok = bool(url and token and agent)
+    report(1, "Config", config_ok)
+    if not url:
+        click.echo("  AGENT_BUS_URL is empty. Fix: export AGENT_BUS_URL=http://<host>:8800", err=True)
+    if not token:
+        click.echo("  AGENT_BUS_TOKEN is not set. Fix: export AGENT_BUS_TOKEN=<your-token>", err=True)
+    if not agent:
+        click.echo("  AGENT_BUS_AGENT is not set. Fix: export AGENT_BUS_AGENT=<your-agent>", err=True)
+    if config_ok:
+        masked = (token[:3] + "***" + token[-2:]) if len(token) > 5 else "***"
+        click.echo(f"  url={url} agent={agent} token={masked}")
+    all_ok = all_ok and config_ok
+
+    # Without config the remaining checks cannot proceed meaningfully.
+    if not config_ok:
+        click.echo("\nFix the config above and re-run.", err=True)
+        sys.exit(1)
+
+    headers = get_headers(token)
+
+    # --- 2. Server /health reachable ---
+    health_ok = False
+    try:
+        with httpx.Client(timeout=10) as client:
+            resp = client.get(f"{url}/health")
+        if resp.status_code == 200 and resp.json().get("status") == "ok":
+            health_ok = True
+            click.echo(f"  {url}/health -> status=ok")
+        else:
+            click.echo(f"  {url}/health returned {resp.status_code}: {resp.text[:200]}", err=True)
+            click.echo("  Fix: ensure the Agent Bus server is running at AGENT_BUS_URL.", err=True)
+    except httpx.HTTPError as exc:
+        click.echo(f"  Cannot reach {url}/health: {exc}", err=True)
+        click.echo(f"  Fix: check AGENT_BUS_URL and that the server is up (e.g. curl {url}/health).", err=True)
+    report(2, "Server /health", health_ok)
+    all_ok = all_ok and health_ok
+
+    # --- 3. Auth scope valid (can list own pending events) ---
+    auth_ok = False
+    if health_ok:
+        try:
+            with httpx.Client(timeout=10) as client:
+                resp = client.get(
+                    f"{url}/events/pending",
+                    params={"agent": agent},
+                    headers=headers,
+                )
+            if resp.status_code == 200:
+                events = resp.json()
+                auth_ok = True
+                click.echo(f"  listed {len(events)} pending event(s) for '{agent}'")
+            elif resp.status_code == 401:
+                click.echo("  401 — token rejected.", err=True)
+                click.echo("  Fix: AGENT_BUS_TOKEN must match the server's AGENT_BUS_TOKEN (legacy) "
+                           "or an AGENT_BUS_AGENT_TOKENS entry.", err=True)
+            elif resp.status_code == 403:
+                click.echo(f"  403 — token not scoped for agent '{agent}'.", err=True)
+                click.echo("  Fix: set AGENT_BUS_AGENT to the agent this token belongs to, or update "
+                           "the server's AGENT_BUS_AGENT_TOKENS.", err=True)
+            else:
+                click.echo(f"  Unexpected {resp.status_code}: {resp.text[:200]}", err=True)
+        except httpx.HTTPError as exc:
+            click.echo(f"  Request error: {exc}", err=True)
+    else:
+        click.echo("  Skipped (server unreachable).", err=True)
+    report(3, "Auth scope", auth_ok)
+    all_ok = all_ok and auth_ok
+
+    # --- 4. Optional send->pending->ack round-trip self-test ---
+    if send_test:
+        rt_ok = False
+        if not (health_ok and auth_ok):
+            click.echo("  Skipped (prior checks failed).", err=True)
+        else:
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            body = {
+                "from_agent": agent,
+                "to_agent": agent,
+                "type": "control:doctor-test",
+                "payload": {"_doctor": True, "ts": ts},
+            }
+            test_event_id = None
+            try:
+                with httpx.Client(timeout=10) as client:
+                    resp = client.post(f"{url}/events", headers=headers, json=body)
+                    if resp.status_code == 201:
+                        test_event_id = resp.json().get("id")
+                    else:
+                        click.echo(f"  Send failed: {resp.status_code} {resp.text[:200]}", err=True)
+
+                    if test_event_id is not None:
+                        # Verify the event shows up in pending.
+                        resp = client.get(
+                            f"{url}/events/pending",
+                            params={"agent": agent},
+                            headers=headers,
+                        )
+                        ids = [e.get("id") for e in resp.json()] if resp.status_code == 200 else []
+                        seen = test_event_id in ids
+                        if not seen:
+                            click.echo(f"  Event {test_event_id} not found in pending.", err=True)
+
+                        # Clean up: ACK the test event.
+                        ack_resp = client.post(
+                            f"{url}/events/{test_event_id}/ack",
+                            params={"agent": agent},
+                            headers=headers,
+                        )
+                        acked = ack_resp.status_code == 200
+                        if seen and acked:
+                            rt_ok = True
+                            click.echo(f"  sent id={test_event_id} -> pending -> acked (cleaned up)")
+                        else:
+                            click.echo(f"  round-trip incomplete: seen={seen} acked={acked}", err=True)
+                    else:
+                        click.echo("  No event id returned; cannot complete round-trip.", err=True)
+            except httpx.HTTPError as exc:
+                click.echo(f"  Round-trip error: {exc}", err=True)
+            if not rt_ok and test_event_id is not None:
+                click.echo(f"  Manual cleanup: agent-bus ack {test_event_id}", err=True)
+        report(4, "Round-trip --send-test", rt_ok)
+        all_ok = all_ok and rt_ok
+
+    click.echo("")
+    if all_ok:
+        click.echo("All checks passed.")
+        sys.exit(0)
+    click.echo("One or more checks failed.", err=True)
+    sys.exit(1)
+
+
+@cli.command()
+@click.option("--agent", envvar="AGENT_BUS_AGENT",
+               required=True, help="Agent name to listen as")
 @click.option("--on", "handlers", nargs=2, multiple=True,
               metavar="TYPE COMMAND",
               help="Run COMMAND for events of TYPE. ACK happens only on success.")
