@@ -23,5 +23,6 @@ data/
 Thumbs.db
 .omx/
 
-# Agent Workflow run artifacts (development process, not source)
-.awf/
+# transient run markers (not artifacts)
+.awf/artifacts/.opencode-done
+.awf/artifacts/.awf-done-*
