@@ -380,10 +380,12 @@ def doctor(ctx, agent, send_test):
               help="ACK immediately after printing, without running a handler")
 @click.option("--once", is_flag=True,
               help="Process one event and exit")
+@click.option("--exit-after-idle", default=None, type=int,
+              help="Exit after N seconds without receiving any events")
 @click.option("--ack/--no-ack", "legacy_ack", default=None, hidden=True,
               help="Deprecated; use --ack-on-receive")
 @click.pass_context
-def listen(ctx, agent, handlers, handler_timeout, workdir, ack_on_receive, once, legacy_ack):
+def listen(ctx, agent, handlers, handler_timeout, workdir, ack_on_receive, once, legacy_ack, exit_after_idle):
     """Listen for events via SSE and print them to stdout.
 
     On connect, receives all un-ACKed events, then waits for new ones.
@@ -393,6 +395,8 @@ def listen(ctx, agent, handlers, handler_timeout, workdir, ack_on_receive, once,
         ack_on_receive = legacy_ack
 
     handler_map = dict(handlers)
+    timeout_config = httpx.Timeout(float(exit_after_idle), connect=30.0) if exit_after_idle else None
+    shutdown_requested = False
     url = f"{ctx.obj['url']}/events/stream?agent={agent}"
     headers = {
         **get_headers(ctx.obj["token"]),
@@ -414,6 +418,23 @@ def listen(ctx, agent, handlers, handler_timeout, workdir, ack_on_receive, once,
 
         if event_id in completed_ids:
             return False
+
+        # Built-in control:shutdown — ACK and exit gracefully
+        if event_data["type"] == "control:shutdown":
+            payload = event_data.get("payload", {})
+            target = payload.get("target") if isinstance(payload, dict) else None
+            if target is not None and target != agent:
+                click.echo(f"  control:shutdown target={target} != agent={agent}; ignoring")
+                click.echo("")
+                return False
+            click.echo("  control:shutdown received — shutting down gracefully.")
+            acked = _post_ack(ctx.obj["url"], ctx.obj["token"], event_id)
+            if acked:
+                completed_ids.add(event_id)
+            nonlocal shutdown_requested
+            shutdown_requested = True
+            click.echo("")
+            return True
 
         # Timestamp for display
         now = datetime.now(timezone.utc).strftime("%H:%M:%S")
@@ -456,7 +477,7 @@ def listen(ctx, agent, handlers, handler_timeout, workdir, ack_on_receive, once,
 
     while True:
         try:
-            with httpx.Client(timeout=None) as client:
+            with httpx.Client(timeout=timeout_config) as client:
                 with client.stream("GET", url, headers=headers) as resp:
                     if resp.status_code != 200:
                         click.echo(f"Error: Server returned {resp.status_code}: {resp.text}", err=True)
@@ -481,7 +502,7 @@ def listen(ctx, agent, handlers, handler_timeout, workdir, ack_on_receive, once,
                                 try:
                                     event_data = json.loads(buffer)
                                     process_event(event_data)
-                                    if once:
+                                    if once or shutdown_requested:
                                         return
                                 except json.JSONDecodeError:
                                     click.echo(f"Warning: could not parse event data: {buffer}", err=True)
@@ -498,6 +519,9 @@ def listen(ctx, agent, handlers, handler_timeout, workdir, ack_on_receive, once,
                             buffer = line[5:].strip()
                         # else: comment or unknown field, ignore
 
+        except httpx.ReadTimeout:
+            click.echo(f"No events received for {exit_after_idle}s; exiting.")
+            return
         except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError) as e:
             click.echo(f"Connection lost: {e}. Reconnecting in {retry_delay}s...", err=True)
             time.sleep(retry_delay)
