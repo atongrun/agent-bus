@@ -154,8 +154,8 @@ code `0`. It is a bootstrap example outside Agent Bus core. The normal CLI
 listener remains the preferred long-running path once Python 3.11+ and the
 `agent-bus` package are installed.
 
-If the Windows machine does not yet have Python 3.11 or the `agent-bus` CLI,
-use the lightweight polling listener to prove the chain first:
+A second variant, `scripts/windows-poll-listener.ps1`, takes the handler as an
+`-OnTaskNew` template and additionally supports `-Workdir`:
 
 ```powershell
 $env:AGENT_BUS_URL = "http://<vps-tailscale-ip>:8800"
@@ -166,11 +166,6 @@ powershell -ExecutionPolicy Bypass -File .\scripts\windows-poll-listener.ps1 `
   -OnTaskNew 'opencode run --prompt {payload.prompt}'
 ```
 
-This fallback polls `pending`, runs the handler for `task:new`, and ACKs only
-when the handler exits with code `0`. It is meant as a bootstrap path; the
-normal CLI listener remains the preferred long-running path once Python 3.11+
-is installed.
-
 To run the handler inside a specific project directory (mirroring the main
 CLI's `--workdir`), pass `-Workdir`. The path must exist and be a directory,
 otherwise the listener errors out before polling starts; the original directory
@@ -178,7 +173,7 @@ is restored after each handler run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\windows-poll-listener.ps1 `
-  -Workdir "D:\projects\jinri-yi-dingtou" `
+  -Workdir "D:\path\to\your-project" `
   -OnTaskNew 'opencode run --prompt {payload.prompt}'
 ```
 
@@ -194,29 +189,12 @@ and the handler runs there:
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\windows-poll-listener.ps1 `
   -Url http://localhost:8800 -Token dummy -Once `
-  -Workdir "D:\projects\jinri-yi-dingtou" `
+  -Workdir "D:\path\to\your-project" `
   -OnTaskNew 'cd'
 ```
 
 `-Workdir` pointing at a missing or non-directory path must abort before any
 polling with `Workdir does not exist` / `Workdir is not a directory`.
-
-If the Windows machine does not yet have Python 3.11 or the `agent-bus` CLI,
-use the lightweight polling listener to prove the chain first:
-
-```powershell
-$env:AGENT_BUS_URL = "http://<vps-tailscale-ip>:8800"
-$env:AGENT_BUS_TOKEN = "<coder-token>"
-$env:AGENT_BUS_AGENT = "coder"
-
-powershell -ExecutionPolicy Bypass -File .\scripts\windows-poll-listener.ps1 `
-  -OnTaskNew 'opencode run --prompt {payload.prompt}'
-```
-
-This fallback polls `pending`, runs the handler for `task:new`, and ACKs only
-when the handler exits with code `0`. It is meant as a bootstrap path; the
-normal CLI listener remains the preferred long-running path once Python 3.11+
-is installed.
 
 ## Local Multi-Agent Mode
 

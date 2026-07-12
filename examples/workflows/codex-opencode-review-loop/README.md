@@ -128,7 +128,7 @@ $env:AGENT_BUS_TOKEN = "<windows-opencode-token>"
 $env:AGENT_BUS_AGENT = "windows-opencode"
 
 .\examples\workflows\codex-opencode-review-loop\windows-worker.ps1 `
-  -Workdir "D:\projects\agent-bus" `
+  -Workdir "D:\path\to\agent-bus" `
   -ReviewerAgent "mac-codex"
 ```
 
