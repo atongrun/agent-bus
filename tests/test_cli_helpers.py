@@ -23,9 +23,13 @@ class CliHelperTests(unittest.TestCase):
 
         rendered = render_command("opencode run {id} {payload.task_id} {payload.prompt}", event)
 
-        self.assertEqual(rendered, "opencode run 12 task-12 'do it'")
+        # render_command returns an argv LIST (no shell). A value with a space
+        # ("do it") is a single argv element, not two.
+        self.assertEqual(rendered, ["opencode", "run", "12", "task-12", "do it"])
 
-    def test_render_command_quotes_shell_metacharacters(self):
+    def test_render_command_value_with_metacharacters_is_one_argv_element(self):
+        # With shell=False there is no shell to inject into: a value containing shell
+        # metacharacters is passed verbatim as a single argv element, never re-parsed.
         event = {
             "payload": {
                 "prompt": "hello; echo hacked",
@@ -34,7 +38,21 @@ class CliHelperTests(unittest.TestCase):
 
         rendered = render_command("opencode run --prompt {payload.prompt}", event)
 
-        self.assertEqual(rendered, "opencode run --prompt 'hello; echo hacked'")
+        self.assertEqual(rendered, ["opencode", "run", "--prompt", "hello; echo hacked"])
+
+    def test_render_command_honours_quoted_path_with_spaces(self):
+        # A double-quoted token (e.g. a git-bash path with spaces) stays one argv
+        # element — this is how awf_listen wraps the python exe + script path.
+        event = {"payload": {"branch": "awf/x"}}
+
+        rendered = render_command(
+            '"C:\\Program Files\\Git\\python.exe" role --branch {payload.branch}', event
+        )
+
+        self.assertEqual(
+            rendered,
+            ["C:\\Program Files\\Git\\python.exe", "role", "--branch", "awf/x"],
+        )
 
     def test_render_command_fails_on_missing_field(self):
         with self.assertRaises(KeyError):
@@ -56,8 +74,13 @@ class CliHelperTests(unittest.TestCase):
         self.assertIn("Payload must be a JSON object", result.output)
 
     def test_handler_success_and_failure_follow_exit_code(self):
-        self.assertTrue(run_handler(f"{sys.executable} -c \"raise SystemExit(0)\"", timeout=5, workdir=None))
-        self.assertFalse(run_handler(f"{sys.executable} -c \"raise SystemExit(3)\"", timeout=5, workdir=None))
+        # run_handler now takes an argv list and runs it with shell=False.
+        self.assertTrue(
+            run_handler([sys.executable, "-c", "raise SystemExit(0)"], timeout=5, workdir=None)
+        )
+        self.assertFalse(
+            run_handler([sys.executable, "-c", "raise SystemExit(3)"], timeout=5, workdir=None)
+        )
 
 
 if __name__ == "__main__":
