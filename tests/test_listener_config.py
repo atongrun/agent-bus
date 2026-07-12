@@ -172,7 +172,16 @@ class ListenerConfigTests(unittest.TestCase):
         self.assertIsNone(issue)
         self.assertEqual(
             [call.args[0] for call in run.call_args_list],
-            [["tailscale", "status"], ["tailscale", "ping", "mesh-host"]],
+            [
+                ["tailscale", "status"],
+                [
+                    "tailscale",
+                    "ping",
+                    "--until-direct=false",
+                    "--c=1",
+                    "mesh-host",
+                ],
+            ],
         )
 
 

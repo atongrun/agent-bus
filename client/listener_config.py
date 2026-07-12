@@ -153,7 +153,10 @@ def warm_network_path(env: dict[str, str] | None = None) -> str | None:
         return "network warm-up is not configured"
     for name, argv in (
         ("status", [command, "status"]),
-        ("ping", [command, "ping", host]),
+        (
+            "ping",
+            [command, "ping", "--until-direct=false", "--c=1", host],
+        ),
     ):
         try:
             completed = subprocess.run(
