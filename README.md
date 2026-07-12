@@ -154,6 +154,10 @@ It refuses to replace an existing file unless `--force` is given. `doctor
 the configured private-network path, and then runs the normal server and
 authentication diagnostics.
 
+By default, `init` bridges `--agent coder` from `AWF_CODER_TOKEN`. If an
+existing AWF role uses a different variable name, select it explicitly without
+copying the secret value, for example `--token-env AWF_ARCH_TOKEN`.
+
 ```bash
 export AGENT_BUS_URL=http://<agent-bus-host>:8800
 export AGENT_BUS_TOKEN=<coder-token>

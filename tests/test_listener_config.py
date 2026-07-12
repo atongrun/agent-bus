@@ -39,6 +39,30 @@ class ListenerConfigTests(unittest.TestCase):
             "/d/workspace/config/dispatch.env",
         )
 
+    def test_explicit_token_env_supports_existing_role_alias(self):
+        rendered = render_listener_env(
+            agent="architect",
+            token_env="AWF_ARCH_TOKEN",
+            url="http://mesh-host:8800",
+            awf_env=Path("/config/awf/dispatch.env"),
+            repo_dir=Path("/workspace/repo"),
+            script_dir=Path("/workspace/scripts"),
+        )
+
+        self.assertIn("${AWF_ARCH_TOKEN:?AWF_ARCH_TOKEN is required}", rendered)
+        self.assertNotIn("AWF_ARCHITECT_TOKEN", rendered)
+
+    def test_rejects_unsafe_token_env_name(self):
+        with self.assertRaisesRegex(ValueError, "variable name is invalid"):
+            render_listener_env(
+                agent="architect",
+                token_env="AWF_ARCH_TOKEN$(bad)",
+                url="http://mesh-host:8800",
+                awf_env=Path("/config/awf/dispatch.env"),
+                repo_dir=Path("/workspace/repo"),
+                script_dir=Path("/workspace/scripts"),
+            )
+
     def test_rejects_shell_metacharacters_in_hostname(self):
         with self.assertRaisesRegex(ValueError, "unsupported characters"):
             render_listener_env(
