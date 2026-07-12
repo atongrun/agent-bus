@@ -86,31 +86,42 @@ def _lookup_template_value(event_data: dict, expression: str):
     return str(current)
 
 
-def _quote_command_value(value: str) -> str:
-    """Quote a template value for the local shell."""
-    if os.name == "nt":
-        return subprocess.list2cmdline([value])
-    return shlex.quote(value)
+def render_command(template: str, event_data: dict) -> list[str]:
+    """Render a handler command template for one event into an argv list.
+
+    The template is split into tokens ONCE with ``shlex.split`` (POSIX rules: honours
+    double/single quotes, so a quoted path with spaces stays one token). Any token that
+    is exactly a ``{placeholder}`` is replaced by the raw looked-up value as a single
+    argv element — no shell-quoting and no re-splitting. The result is fed to
+    ``subprocess.run(argv, shell=False)``, so no shell (cmd.exe/sh) ever re-parses it.
+    This is the whole point: one parse here, not three across cmd.exe + sh dialects.
+    """
+    argv: list[str] = []
+    for token in shlex.split(template, posix=True):
+        m = _PLACEHOLDER_RE.fullmatch(token)
+        if m:
+            # A standalone placeholder → the looked-up value as exactly one argv element.
+            argv.append(_lookup_template_value(event_data, m.group(1).strip()))
+        else:
+            # A token that embeds placeholder(s) among other text → substitute inline.
+            argv.append(
+                _PLACEHOLDER_RE.sub(
+                    lambda mm: _lookup_template_value(event_data, mm.group(1).strip()),
+                    token,
+                )
+            )
+    return argv
 
 
-def render_command(template: str, event_data: dict) -> str:
-    """Render a handler command template for one event."""
-    def replace(match: re.Match) -> str:
-        expression = match.group(1).strip()
-        return _quote_command_value(_lookup_template_value(event_data, expression))
-
-    return _PLACEHOLDER_RE.sub(replace, template)
-
-
-def run_handler(command: str, timeout: int, workdir: str | None) -> bool:
-    """Run a handler command. Success is exit code 0 before timeout."""
+def run_handler(argv: list[str], timeout: int, workdir: str | None) -> bool:
+    """Run a handler command (real argv, no shell). Success is exit code 0 before timeout."""
     started = time.monotonic()
-    click.echo(f"  Handler start: {command}")
+    click.echo(f"  Handler start: {argv}")
     try:
         completed = subprocess.run(
-            command,
+            argv,
             cwd=workdir or None,
-            shell=True,
+            shell=False,
             timeout=timeout,
         )
     except subprocess.TimeoutExpired:

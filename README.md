@@ -29,6 +29,11 @@ near-term operating stance: keep the relay lightweight, borrow mature queue
 reliability habits, and improve client diagnostics before adding heavier
 infrastructure.
 
+See [docs/recommended-practices.md](docs/recommended-practices.md) for the
+near-term operating stance: keep the relay lightweight, borrow mature queue
+reliability habits, and improve client diagnostics before adding heavier
+infrastructure.
+
 ## Architecture
 
 ```
@@ -99,16 +104,6 @@ Mac Codex client -> VPS Agent Bus over Tailscale -> Windows Open Code listener
 
 For this topology, the VPS Tailscale URL should work. The VPS public IP does not
 need to expose `8800/tcp`.
-
-For a small trusted network of your own machines, prefer a private transport
-such as Tailscale instead of exposing `8800/tcp` on the public internet:
-
-```text
-sender agent -> Agent Bus over Tailscale -> receiver adapter -> local tool
-```
-
-The public VPS address does not need to serve Agent Bus when the tailnet URL
-works. See [docs/guide/installation.md](docs/guide/installation.md).
 
 ### 2. Sender Side (Planner / Architect)
 

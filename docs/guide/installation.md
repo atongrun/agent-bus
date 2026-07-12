@@ -6,6 +6,9 @@ foreground CLI listeners or external adapters on each agent machine.
 For the rationale behind this lightweight path, see
 [../recommended-practices.md](../recommended-practices.md).
 
+For the rationale behind this lightweight path, see
+[../recommended-practices.md](../recommended-practices.md).
+
 ## Server
 
 On a Linux VPS or local Linux machine:
@@ -197,6 +200,23 @@ powershell -ExecutionPolicy Bypass -File .\scripts\windows-poll-listener.ps1 `
 
 `-Workdir` pointing at a missing or non-directory path must abort before any
 polling with `Workdir does not exist` / `Workdir is not a directory`.
+
+If the Windows machine does not yet have Python 3.11 or the `agent-bus` CLI,
+use the lightweight polling listener to prove the chain first:
+
+```powershell
+$env:AGENT_BUS_URL = "http://<vps-tailscale-ip>:8800"
+$env:AGENT_BUS_TOKEN = "<coder-token>"
+$env:AGENT_BUS_AGENT = "coder"
+
+powershell -ExecutionPolicy Bypass -File .\scripts\windows-poll-listener.ps1 `
+  -OnTaskNew 'opencode run --prompt {payload.prompt}'
+```
+
+This fallback polls `pending`, runs the handler for `task:new`, and ACKs only
+when the handler exits with code `0`. It is meant as a bootstrap path; the
+normal CLI listener remains the preferred long-running path once Python 3.11+
+is installed.
 
 ## Local Multi-Agent Mode
 
