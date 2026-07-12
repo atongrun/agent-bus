@@ -35,6 +35,11 @@ class AckResponse(BaseModel):
     acked_at: str
 
 
+class BootstrapTokenRequest(BaseModel):
+    """Request body for bootstrap token exchange."""
+    agent: str = Field(..., min_length=1, max_length=128)
+
+
 class HealthResponse(BaseModel):
     """Health check response."""
     status: str

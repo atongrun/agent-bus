@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 from fastapi import FastAPI
 
+from server.bootstrap import router as bootstrap_router
 from server.db import init_db
 from server.events import router as events_router
 
@@ -30,6 +31,8 @@ app = FastAPI(
 
 # Include event routes
 app.include_router(events_router)
+# Include bootstrap token endpoint
+app.include_router(bootstrap_router)
 
 
 @app.get("/health")
