@@ -193,6 +193,11 @@ def cli(ctx, url, token):
 @click.option("--agent", required=True, help="Listener agent/role name")
 @click.option("--server-url", required=True, help="Agent Bus server URL")
 @click.option(
+    "--token-env",
+    default=None,
+    help="AWF variable containing this agent's token (defaults from --agent)",
+)
+@click.option(
     "--awf-env",
     type=click.Path(path_type=Path, dir_okay=False),
     default=lambda: Path.home() / ".config" / "awf" / "dispatch.env",
@@ -215,7 +220,15 @@ def cli(ctx, url, token):
 @click.option("--warmup-command", default="tailscale", show_default=True)
 @click.option("--force", is_flag=True, help="Replace an existing generated config")
 def init_listener(
-    agent, server_url, awf_env, repo_dir, script_dir, config_path, warmup_command, force
+    agent,
+    server_url,
+    token_env,
+    awf_env,
+    repo_dir,
+    script_dir,
+    config_path,
+    warmup_command,
+    force,
 ):
     """Create the private, sourceable environment for a workflow listener."""
     for label, path in (
@@ -232,6 +245,7 @@ def init_listener(
             awf_env=awf_env.expanduser().resolve(),
             repo_dir=repo_dir.expanduser().resolve(),
             script_dir=script_dir.expanduser().resolve(),
+            token_env=token_env,
             warmup_command=warmup_command,
         )
         write_listener_env(config_path, content, force=force)

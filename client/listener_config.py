@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 
 
 _AGENT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+_ENV_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _HOST_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$")
 
 
@@ -26,12 +27,16 @@ def shell_quote(value: str) -> str:
     return "'" + value.replace("'", "'\"'\"'") + "'"
 
 
-def token_variable(agent: str) -> str:
+def token_variable(agent: str, override: str | None = None) -> str:
     """Map an Agent Bus role to the matching AWF token variable."""
     if not _AGENT_RE.fullmatch(agent):
         raise ValueError(
             "agent must start with a letter and contain only letters, digits, _ or -"
         )
+    if override is not None:
+        if not _ENV_VAR_RE.fullmatch(override):
+            raise ValueError("token environment variable name is invalid")
+        return override
     return f"AWF_{agent.upper().replace('-', '_')}_TOKEN"
 
 
@@ -62,10 +67,11 @@ def render_listener_env(
     awf_env: Path,
     repo_dir: Path,
     script_dir: Path,
+    token_env: str | None = None,
     warmup_command: str = "tailscale",
 ) -> str:
     """Render a sourceable environment file without copying token values."""
-    token_var = token_variable(agent)
+    token_var = token_variable(agent, token_env)
     host = network_host(url)
     values = {
         "url": shell_quote(url.rstrip("/")),
