@@ -100,6 +100,10 @@ def _run_listen(replays, max_attempts, handler_cmd):
         # poison events never ACK; stub the network ACK so nothing hits a server.
         "client.cli._post_ack",
         return_value=False,
+    ), mock.patch(
+        # Also stub _post_fail so poison-branch calls don't hit the network.
+        "client.cli._post_fail",
+        return_value=True,
     ):
         return runner.invoke(
             cli,
@@ -131,6 +135,85 @@ def _always_fail_handler(marker_path):
         "sys.exit(7)"
     )
     return f'{sys.executable} -c "{py}"'
+
+
+class PoisonEventFailPersistenceTests(unittest.TestCase):
+    """Tests for server-side fail persistence (ABUS-SERVER-FAIL-PERSIST-008)."""
+
+    def test_post_fail_called_when_handler_exhausts_attempts(self):
+        """_post_fail must be called when a handler exhausts max_event_attempts."""
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import MagicMock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = str(Path(tmp) / "runs.txt")
+            fail_mock = MagicMock(return_value=True)
+
+            budget = [6]
+
+            def client_factory(*args, **kwargs):
+                return _FakeClient(POISON_EVENT, budget, *args, **kwargs)
+
+            runner = CliRunner()
+            with mock.patch("client.cli.httpx.Client", side_effect=client_factory), \
+                 mock.patch("client.cli._post_ack", return_value=False), \
+                 mock.patch("client.cli._post_fail", side_effect=fail_mock):
+                result = runner.invoke(
+                    cli,
+                    [
+                        "listen",
+                        "--agent", "coder",
+                        "--max-event-attempts", "3",
+                        "--exit-after-idle", "1",
+                        "--handler-timeout", "5",
+                        "--on", "test:poison-sim",
+                        _always_fail_handler(marker),
+                    ],
+                    obj={"url": "http://fake", "token": "x"},
+                )
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            # _post_fail should have been called exactly once (after 3rd failure)
+            self.assertEqual(fail_mock.call_count, 1,
+                             msg=f"_post_fail called {fail_mock.call_count} times. Output:\n{result.output}")
+            args, _ = fail_mock.call_args
+            self.assertEqual(args[2], 42, msg=f"Wrong event_id. Output:\n{result.output}")
+            self.assertIn("Handler failed after 3 consecutive attempts", args[3],
+                          msg=f"Wrong error text. Output:\n{result.output}")
+
+    def test_post_fail_not_called_on_success(self):
+        """_post_fail must NOT be called when the handler succeeds."""
+        from unittest.mock import MagicMock
+
+        fail_mock = MagicMock(return_value=True)
+
+        budget = [5]
+
+        def client_factory(*args, **kwargs):
+            return _FakeClient(POISON_EVENT, budget, *args, **kwargs)
+
+        ok_handler = f'{sys.executable} -c "raise SystemExit(0)"'
+        runner = CliRunner()
+        with mock.patch("client.cli.httpx.Client", side_effect=client_factory), \
+             mock.patch("client.cli._post_ack", return_value=False), \
+             mock.patch("client.cli._post_fail", side_effect=fail_mock):
+            result = runner.invoke(
+                cli,
+                [
+                    "listen",
+                    "--agent", "coder",
+                    "--max-event-attempts", "3",
+                    "--exit-after-idle", "1",
+                    "--handler-timeout", "5",
+                    "--on", "test:poison-sim",
+                    ok_handler,
+                ],
+                obj={"url": "http://fake", "token": "x"},
+            )
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        fail_mock.assert_not_called()
 
 
 class PoisonEventTests(unittest.TestCase):

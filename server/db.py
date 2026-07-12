@@ -53,7 +53,8 @@ def init_db():
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 delivered_at TEXT,
                 acked_at TEXT,
-                retry_count INTEGER NOT NULL DEFAULT 0
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT
             )
         """)
         # Index for efficient query of un-acked events by agent
@@ -66,6 +67,12 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_events_created_at
             ON events(created_at)
         """)
+        # Idempotent migration: add last_error column if not present
+        # (safe to re-run init_db() against an existing database).
+        try:
+            conn.execute("ALTER TABLE events ADD COLUMN last_error TEXT")
+        except sqlite3.OperationalError:
+            pass  # Column already exists — safe on re-init
 
 
 def insert_event(from_agent: str, to_agent: str, event_type: str,
@@ -137,6 +144,24 @@ def ack_event(event_id: int) -> bool:
                    acked_at = datetime('now')
                WHERE id = ? AND status IN ('pending', 'delivered')""",
             (event_id,)
+        )
+        return cursor.rowcount > 0
+
+
+def mark_failed(event_id: int, last_error: str | None) -> bool:
+    """Mark an event as failed. Returns True if updated.
+
+    Only pending/delivered events transition to failed; an already-acked or
+    already-failed event is a no-op (returns False).
+    """
+    with get_db() as conn:
+        cursor = conn.execute(
+            """UPDATE events
+               SET status = 'failed',
+                   retry_count = retry_count + 1,
+                   last_error = ?
+               WHERE id = ? AND status IN ('pending', 'delivered')""",
+            (last_error, event_id)
         )
         return cursor.rowcount > 0
 
