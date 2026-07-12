@@ -520,6 +520,13 @@ def listen(ctx, agent, handlers, handler_timeout, workdir, ack_on_receive, once,
             with httpx.Client(timeout=timeout_config) as client:
                 with client.stream("GET", url, headers=headers) as resp:
                     if resp.status_code != 200:
+                        # `resp` is a streaming response: newer httpx forbids reading
+                        # `.text`/`.content` until the body has been consumed with
+                        # `read()`. Without this, an error response (e.g. a 4xx during
+                        # the SSE handshake) raises "Attempted to access streaming
+                        # response content, without having called `read()`" — which was
+                        # swallowed as an "Unexpected error" and spun the reconnect loop.
+                        resp.read()
                         click.echo(f"Error: Server returned {resp.status_code}: {resp.text}", err=True)
                         time.sleep(retry_delay)
                         retry_delay = min(retry_delay * 2, max_retry_delay)
