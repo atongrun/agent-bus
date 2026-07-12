@@ -70,6 +70,31 @@ def _post_ack(base_url: str, token: str, event_id: int) -> bool:
     return False
 
 
+def _post_fail(base_url: str, token: str, event_id: int, error: str) -> bool:
+    """FAIL an event (server persists it) and print a short diagnostic.
+
+    Never raises out of the listen loop: on network error it prints and
+    returns False, mirroring _post_ack.
+    """
+    try:
+        with httpx.Client(timeout=10) as client:
+            resp = client.post(
+                f"{base_url}/events/{event_id}/fail",
+                headers=get_headers(token),
+                json={"error": error},
+            )
+    except Exception as exc:
+        click.echo(f"  FAIL error: {exc}", err=True)
+        return False
+
+    if resp.status_code == 200:
+        click.echo("  FAILed (server notified)")
+        return True
+
+    click.echo(f"  FAIL failed: {resp.status_code} {resp.text}", err=True)
+    return False
+
+
 _PLACEHOLDER_RE = re.compile(r"\{([^{}]+)\}")
 
 
@@ -487,6 +512,7 @@ def listen(ctx, agent, handlers, handler_timeout, workdir, ack_on_receive, once,
                 click.echo(f"  Handler template missing field: {exc}", err=True)
                 failure_counts[event_id] = failure_counts.get(event_id, 0) + 1
                 if failure_counts[event_id] >= max_event_attempts:
+                    _post_fail(ctx.obj["url"], ctx.obj["token"], event_id, f"Handler template missing field: {exc}")
                     skipped_ids.add(event_id)
                     click.echo(f"  Skipping poison event {event_id} after {max_event_attempts} consecutive failed attempts (handler template error)")
             else:
@@ -494,6 +520,7 @@ def listen(ctx, agent, handlers, handler_timeout, workdir, ack_on_receive, once,
                 if not should_ack:
                     failure_counts[event_id] = failure_counts.get(event_id, 0) + 1
                     if failure_counts[event_id] >= max_event_attempts:
+                        _post_fail(ctx.obj["url"], ctx.obj["token"], event_id, f"Handler failed after {max_event_attempts} consecutive attempts")
                         skipped_ids.add(event_id)
                         click.echo(f"  Skipping poison event {event_id} after {max_event_attempts} consecutive failed attempts")
         elif ack_on_receive:
@@ -561,6 +588,7 @@ def listen(ctx, agent, handlers, handler_timeout, workdir, ack_on_receive, once,
                                         else:
                                             failure_counts[eid] = failure_counts.get(eid, 0) + 1
                                             if failure_counts[eid] >= max_event_attempts:
+                                                _post_fail(ctx.obj["url"], ctx.obj["token"], eid, f"JSON decode error after {max_event_attempts} consecutive attempts")
                                                 skipped_ids.add(eid)
                                                 click.echo(f"  Skipping poison event {eid} after {max_event_attempts} consecutive failed attempts (JSON decode error)")
                             buffer = ""

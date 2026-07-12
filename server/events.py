@@ -16,8 +16,9 @@ from server.db import (
     get_pending_events,
     insert_event,
     mark_delivered,
+    mark_failed,
 )
-from server.models import EventCreate
+from server.models import EventCreate, EventFail
 
 router = APIRouter(prefix="/events", tags=["events"])
 
@@ -35,6 +36,7 @@ def _row_to_response(row: dict) -> dict:
         "delivered_at": row["delivered_at"],
         "acked_at": row["acked_at"],
         "retry_count": row["retry_count"],
+        "last_error": row["last_error"],
     }
 
 
@@ -95,6 +97,40 @@ async def acknowledge_event(
         "id": event_id,
         "status": "acked",
         "acked_at": updated["acked_at"] if updated else None,
+    }
+
+
+@router.post("/{event_id}/fail")
+async def fail_event(
+    event_id: int,
+    body: EventFail,
+    request: Request,
+    auth: AuthContext = Depends(verify_token),
+):
+    """Mark an event as failed after a listener exhausts its processing attempts."""
+    row = get_event(event_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    _require_agent(auth, row["to_agent"], "fail events")
+
+    # Already acked — cannot fail
+    if row["status"] == "acked":
+        raise HTTPException(status_code=409, detail="Event already acked")
+
+    success = mark_failed(event_id, body.error)
+    if not success:
+        raise HTTPException(
+            status_code=409,
+            detail="Event cannot be failed (already failed or invalid status)",
+        )
+
+    updated = get_event(event_id)
+    return {
+        "id": event_id,
+        "status": "failed",
+        "retry_count": updated["retry_count"] if updated else 0,
+        "last_error": body.error,
     }
 
 

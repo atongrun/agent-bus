@@ -26,6 +26,7 @@ class EventResponse(BaseModel):
     delivered_at: Optional[str] = None
     acked_at: Optional[str] = None
     retry_count: int = 0
+    last_error: Optional[str] = None
 
 
 class AckResponse(BaseModel):
@@ -33,6 +34,11 @@ class AckResponse(BaseModel):
     id: int
     status: str
     acked_at: str
+
+
+class EventFail(BaseModel):
+    """Request body for failing an event."""
+    error: Optional[str] = None
 
 
 class BootstrapTokenRequest(BaseModel):
