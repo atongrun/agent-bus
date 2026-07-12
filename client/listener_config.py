@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
+from pathlib import PurePath
 from urllib.parse import urlparse
 
 
 _AGENT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+_HOST_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$")
 
 
 def default_config_path() -> Path:
@@ -33,10 +37,22 @@ def token_variable(agent: str) -> str:
 
 def network_host(url: str) -> str:
     """Extract the host that must bypass proxies and may need network warm-up."""
-    host = urlparse(url).hostname
-    if not host:
-        raise ValueError("url must include a hostname")
+    parsed = urlparse(url)
+    host = parsed.hostname
+    if parsed.scheme not in {"http", "https"} or not host:
+        raise ValueError("url must be an http(s) URL with a hostname")
+    if not _HOST_RE.fullmatch(host):
+        raise ValueError("url hostname contains unsupported characters")
     return host
+
+
+def source_path(path: PurePath) -> str:
+    """Render a path for a POSIX shell, including Git Bash on Windows."""
+    value = path.as_posix()
+    match = re.fullmatch(r"([A-Za-z]):(/.*)", value)
+    if match:
+        return f"/{match.group(1).lower()}{match.group(2)}"
+    return value
 
 
 def render_listener_env(
@@ -54,9 +70,9 @@ def render_listener_env(
     values = {
         "url": shell_quote(url.rstrip("/")),
         "agent": shell_quote(agent),
-        "awf_env": shell_quote(str(awf_env)),
-        "repo_dir": shell_quote(str(repo_dir)),
-        "script_dir": shell_quote(str(script_dir)),
+        "awf_env": shell_quote(source_path(awf_env)),
+        "repo_dir": shell_quote(repo_dir.as_posix()),
+        "script_dir": shell_quote(script_dir.as_posix()),
         "host": shell_quote(host),
         "warmup": shell_quote(warmup_command),
     }
@@ -73,8 +89,8 @@ export OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true
 export AGENT_BUS_NETWORK_HOST={values["host"]}
 export AGENT_BUS_WARMUP_COMMAND={values["warmup"]}
 case ",${{NO_PROXY:-}}," in
-  *,{host},*) ;;
-  *) export NO_PROXY=\"${{NO_PROXY:+${{NO_PROXY}},}}{host}\" ;;
+  *,\"$AGENT_BUS_NETWORK_HOST\",*) ;;
+  *) export NO_PROXY=\"${{NO_PROXY:+${{NO_PROXY}},}}${{AGENT_BUS_NETWORK_HOST}}\" ;;
 esac
 export no_proxy=\"$NO_PROXY\"
 """
@@ -101,7 +117,14 @@ def listener_environment_issues(env: dict[str, str] | None = None) -> list[str]:
     """Return actionable problems in the current listener environment."""
     current = os.environ if env is None else env
     issues = []
-    required = ("AGENT_BUS_TOKEN", "AGENT_BUS_AGENT", "AWF_REPO_DIR", "AWF_SCRIPT_DIR")
+    required = (
+        "AGENT_BUS_TOKEN",
+        "AGENT_BUS_AGENT",
+        "AGENT_BUS_NETWORK_HOST",
+        "AGENT_BUS_WARMUP_COMMAND",
+        "AWF_REPO_DIR",
+        "AWF_SCRIPT_DIR",
+    )
     for name in required:
         if not current.get(name):
             issues.append(f"{name} is not set")
@@ -115,4 +138,33 @@ def listener_environment_issues(env: dict[str, str] | None = None) -> list[str]:
     bypass = {item.strip() for item in current.get("NO_PROXY", "").split(",")}
     if host and host not in bypass:
         issues.append("AGENT_BUS_NETWORK_HOST is missing from NO_PROXY")
+    command = current.get("AGENT_BUS_WARMUP_COMMAND")
+    if command and shutil.which(command) is None:
+        issues.append("AGENT_BUS_WARMUP_COMMAND is not executable")
     return issues
+
+
+def warm_network_path(env: dict[str, str] | None = None) -> str | None:
+    """Warm the configured private-network path without invoking a shell."""
+    current = os.environ if env is None else env
+    command = current.get("AGENT_BUS_WARMUP_COMMAND", "")
+    host = current.get("AGENT_BUS_NETWORK_HOST", "")
+    if not command or not host:
+        return "network warm-up is not configured"
+    for name, argv in (
+        ("status", [command, "status"]),
+        ("ping", [command, "ping", host]),
+    ):
+        try:
+            completed = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return f"network {name} failed: {type(exc).__name__}"
+        if completed.returncode != 0:
+            return f"network {name} exited {completed.returncode}"
+    return None

@@ -143,7 +143,6 @@ agent-bus init \
   --script-dir <agent-workflow-checkout>/scripts
 
 source ~/.config/agent-bus/listener.env
-"$AGENT_BUS_WARMUP_COMMAND" ping "$AGENT_BUS_NETWORK_HOST"
 agent-bus doctor --listener
 ```
 
@@ -151,8 +150,9 @@ agent-bus doctor --listener
 instead of copying or printing its value, adds the private-network host to
 `NO_PROXY`, and records the AWF paths and OpenCode background-subagent flag.
 It refuses to replace an existing file unless `--force` is given. `doctor
---listener` checks that this listener-specific environment is complete in
-addition to the normal server and authentication diagnostics.
+--listener` checks that this listener-specific environment is complete, warms
+the configured private-network path, and then runs the normal server and
+authentication diagnostics.
 
 ```bash
 export AGENT_BUS_URL=http://<agent-bus-host>:8800

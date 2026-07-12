@@ -4,11 +4,18 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
+from pathlib import PureWindowsPath
+from unittest.mock import patch
 
 from click.testing import CliRunner
 
 from client.cli import cli
-from client.listener_config import listener_environment_issues, render_listener_env
+from client.listener_config import (
+    listener_environment_issues,
+    render_listener_env,
+    source_path,
+    warm_network_path,
+)
 
 
 class ListenerConfigTests(unittest.TestCase):
@@ -25,6 +32,22 @@ class ListenerConfigTests(unittest.TestCase):
         self.assertIn("export AWF_REPO_DIR='D:/workspace/repo'", rendered)
         self.assertIn("export AGENT_BUS_NETWORK_HOST='mesh-host'", rendered)
         self.assertIn("OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true", rendered)
+
+    def test_windows_awf_env_is_rendered_for_git_bash_source(self):
+        self.assertEqual(
+            source_path(PureWindowsPath("D:/workspace/config/dispatch.env")),
+            "/d/workspace/config/dispatch.env",
+        )
+
+    def test_rejects_shell_metacharacters_in_hostname(self):
+        with self.assertRaisesRegex(ValueError, "unsupported characters"):
+            render_listener_env(
+                agent="coder",
+                url="http://mesh$(touch-x):8800",
+                awf_env=Path("/config/dispatch.env"),
+                repo_dir=Path("/workspace/repo"),
+                script_dir=Path("/workspace/scripts"),
+            )
 
     def test_init_writes_private_file_and_never_prints_token(self):
         runner = CliRunner()
@@ -60,6 +83,8 @@ class ListenerConfigTests(unittest.TestCase):
             self.assertEqual(result.exit_code, 0, result.output)
             self.assertNotIn("top-secret", result.output)
             self.assertNotIn("top-secret", output.read_text(encoding="utf-8"))
+            self.assertIn("Load it with: source '", result.output)
+            self.assertIn("listener.env'", result.output)
             self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o600)
 
     def test_init_refuses_to_overwrite_without_force(self):
@@ -104,6 +129,7 @@ class ListenerConfigTests(unittest.TestCase):
                 "AWF_SCRIPT_DIR": tmp,
                 "OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS": "true",
                 "AGENT_BUS_NETWORK_HOST": "mesh-host",
+                "AGENT_BUS_WARMUP_COMMAND": "true",
                 "NO_PROXY": "localhost,mesh-host",
             }
             self.assertEqual(listener_environment_issues(complete), [])
@@ -118,6 +144,36 @@ class ListenerConfigTests(unittest.TestCase):
                     "AGENT_BUS_NETWORK_HOST is missing from NO_PROXY",
                 ],
             )
+
+    def test_missing_warmup_configuration_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {
+                "AGENT_BUS_TOKEN": "secret",
+                "AGENT_BUS_AGENT": "coder",
+                "AWF_REPO_DIR": tmp,
+                "AWF_SCRIPT_DIR": tmp,
+                "OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS": "true",
+            }
+            issues = listener_environment_issues(env)
+            self.assertIn("AGENT_BUS_NETWORK_HOST is not set", issues)
+            self.assertIn("AGENT_BUS_WARMUP_COMMAND is not set", issues)
+
+    @patch("client.listener_config.subprocess.run")
+    def test_network_warmup_uses_argv_without_shell(self, run):
+        run.return_value.returncode = 0
+
+        issue = warm_network_path(
+            {
+                "AGENT_BUS_WARMUP_COMMAND": "tailscale",
+                "AGENT_BUS_NETWORK_HOST": "mesh-host",
+            }
+        )
+
+        self.assertIsNone(issue)
+        self.assertEqual(
+            [call.args[0] for call in run.call_args_list],
+            [["tailscale", "status"], ["tailscale", "ping", "mesh-host"]],
+        )
 
 
 if __name__ == "__main__":

@@ -18,6 +18,9 @@ from client.listener_config import (
     default_config_path,
     listener_environment_issues,
     render_listener_env,
+    shell_quote,
+    source_path,
+    warm_network_path,
     write_listener_env,
 )
 
@@ -241,10 +244,9 @@ def init_listener(
             message = str(exc)
         raise click.ClickException(message) from exc
     click.echo(f"Listener config written: {config_path.expanduser()}")
-    click.echo(f"Load it with: source {config_path.expanduser()}")
-    click.echo(
-        "Then warm the private-network path and run: agent-bus doctor --listener"
-    )
+    source_command_path = shell_quote(source_path(config_path.expanduser()))
+    click.echo(f"Load it with: source {source_command_path}")
+    click.echo("Then run: agent-bus doctor --listener")
 
 
 @cli.command()
@@ -396,14 +398,29 @@ def doctor(ctx, agent, send_test, listener):
             err=True,
         )
     if config_ok:
-        masked = (token[:3] + "***" + token[-2:]) if len(token) > 5 else "***"
-        click.echo(f"  url={url} agent={agent} token={masked}")
+        click.echo(f"  url={url} agent={agent} token=set")
     all_ok = all_ok and config_ok
 
     # Without config the remaining checks cannot proceed meaningfully.
     if not config_ok:
         click.echo("\nFix the config above and re-run.", err=True)
         sys.exit(1)
+
+    listener_ok = True
+    if listener:
+        issues = listener_environment_issues()
+        for issue in issues:
+            click.echo(f"  {issue}", err=True)
+        listener_ok = not issues
+        if listener_ok:
+            warmup_issue = warm_network_path()
+            if warmup_issue:
+                click.echo(f"  {warmup_issue}", err=True)
+                listener_ok = False
+            else:
+                click.echo("  listener environment complete; network path warmed")
+        report(2, "Listener environment", listener_ok)
+        all_ok = all_ok and listener_ok
 
     headers = get_headers(token)
 
@@ -430,7 +447,7 @@ def doctor(ctx, agent, send_test, listener):
             f"  Fix: check AGENT_BUS_URL and that the server is up (e.g. curl {url}/health).",
             err=True,
         )
-    report(2, "Server /health", health_ok)
+    report(2 + int(listener), "Server /health", health_ok)
     all_ok = all_ok and health_ok
 
     # --- 3. Auth scope valid (can list own pending events) ---
@@ -469,19 +486,8 @@ def doctor(ctx, agent, send_test, listener):
             click.echo(f"  Request error: {exc}", err=True)
     else:
         click.echo("  Skipped (server unreachable).", err=True)
-    report(3, "Auth scope", auth_ok)
+    report(3 + int(listener), "Auth scope", auth_ok)
     all_ok = all_ok and auth_ok
-
-    if listener:
-        idx = 4
-        issues = listener_environment_issues()
-        listener_ok = not issues
-        for issue in issues:
-            click.echo(f"  {issue}", err=True)
-        if listener_ok:
-            click.echo("  listener environment is complete")
-        report(idx, "Listener environment", listener_ok)
-        all_ok = all_ok and listener_ok
 
     # --- 4. Optional send->pending->ack round-trip self-test ---
     if send_test:
