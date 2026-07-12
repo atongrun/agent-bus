@@ -131,6 +131,29 @@ The receiver runs `agent-bus listen` with a `--on` handler that invokes its
 local runtime. **The runtime choice is entirely up to the receiver.** Agent Bus
 has no opinion about which tool you use.
 
+For an Agent Workflow listener, generate the repeatable local environment once
+instead of rebuilding it in every shell session:
+
+```bash
+agent-bus init \
+  --agent coder \
+  --server-url http://<private-network-host>:8800 \
+  --awf-env ~/.config/awf/dispatch.env \
+  --repo-dir <agent-bus-checkout> \
+  --script-dir <agent-workflow-checkout>/scripts
+
+source ~/.config/agent-bus/listener.env
+agent-bus doctor --listener
+```
+
+`init` writes a mode-`0600` file, references the matching `AWF_<ROLE>_TOKEN`
+instead of copying or printing its value, adds the private-network host to
+`NO_PROXY`, and records the AWF paths and OpenCode background-subagent flag.
+It refuses to replace an existing file unless `--force` is given. `doctor
+--listener` checks that this listener-specific environment is complete, warms
+the configured private-network path, and then runs the normal server and
+authentication diagnostics.
+
 ```bash
 export AGENT_BUS_URL=http://<agent-bus-host>:8800
 export AGENT_BUS_TOKEN=<coder-token>

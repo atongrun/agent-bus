@@ -14,6 +14,16 @@ import click
 import httpx
 from dotenv import load_dotenv
 
+from client.listener_config import (
+    default_config_path,
+    listener_environment_issues,
+    render_listener_env,
+    shell_quote,
+    source_path,
+    warm_network_path,
+    write_listener_env,
+)
+
 # Load .env if present
 load_dotenv()
 
@@ -162,10 +172,15 @@ def run_handler(argv: list[str], timeout: int, workdir: str | None) -> bool:
 
 
 @click.group()
-@click.option("--url", envvar="AGENT_BUS_URL", default="http://localhost:8800",
-              help="Agent Bus server URL")
-@click.option("--token", envvar="AGENT_BUS_TOKEN", default="",
-              help="Authentication token")
+@click.option(
+    "--url",
+    envvar="AGENT_BUS_URL",
+    default="http://localhost:8800",
+    help="Agent Bus server URL",
+)
+@click.option(
+    "--token", envvar="AGENT_BUS_TOKEN", default="", help="Authentication token"
+)
 @click.pass_context
 def cli(ctx, url, token):
     """Agent Bus — cross-machine event relay for AI agents."""
@@ -174,16 +189,87 @@ def cli(ctx, url, token):
     ctx.obj["token"] = token
 
 
+@cli.command("init")
+@click.option("--agent", required=True, help="Listener agent/role name")
+@click.option("--server-url", required=True, help="Agent Bus server URL")
+@click.option(
+    "--awf-env",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=lambda: Path.home() / ".config" / "awf" / "dispatch.env",
+    show_default="~/.config/awf/dispatch.env",
+    help="Existing AWF environment containing the role token",
+)
+@click.option(
+    "--repo-dir", required=True, type=click.Path(path_type=Path, file_okay=False)
+)
+@click.option(
+    "--script-dir", required=True, type=click.Path(path_type=Path, file_okay=False)
+)
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=default_config_path,
+    show_default="platform user config/agent-bus/listener.env",
+)
+@click.option("--warmup-command", default="tailscale", show_default=True)
+@click.option("--force", is_flag=True, help="Replace an existing generated config")
+def init_listener(
+    agent, server_url, awf_env, repo_dir, script_dir, config_path, warmup_command, force
+):
+    """Create the private, sourceable environment for a workflow listener."""
+    for label, path in (
+        ("--awf-env", awf_env),
+        ("--repo-dir", repo_dir),
+        ("--script-dir", script_dir),
+    ):
+        if not path.expanduser().exists():
+            raise click.ClickException(f"{label} does not exist: {path}")
+    try:
+        content = render_listener_env(
+            agent=agent,
+            url=server_url,
+            awf_env=awf_env.expanduser().resolve(),
+            repo_dir=repo_dir.expanduser().resolve(),
+            script_dir=script_dir.expanduser().resolve(),
+            warmup_command=warmup_command,
+        )
+        write_listener_env(config_path, content, force=force)
+    except (ValueError, FileExistsError, OSError) as exc:
+        if isinstance(exc, FileExistsError):
+            message = (
+                f"Config already exists: {config_path}. Use --force to replace it."
+            )
+        else:
+            message = str(exc)
+        raise click.ClickException(message) from exc
+    click.echo(f"Listener config written: {config_path.expanduser()}")
+    source_command_path = shell_quote(source_path(config_path.expanduser()))
+    click.echo(f"Load it with: source {source_command_path}")
+    click.echo("Then run: agent-bus doctor --listener")
+
+
 @cli.command()
-@click.option("--from", "from_agent", envvar="AGENT_BUS_AGENT",
-              required=True, help="Sender agent name")
+@click.option(
+    "--from",
+    "from_agent",
+    envvar="AGENT_BUS_AGENT",
+    required=True,
+    help="Sender agent name",
+)
 @click.option("--to", "to_agent", required=True, help="Recipient agent name")
 @click.option("--type", "event_type", required=True, help="Event type (e.g., task:new)")
 @click.option("--payload", default="{}", help="JSON payload string")
-@click.option("--payload-file", type=click.Path(exists=True, dir_okay=False),
-              help="Read JSON payload object from a file")
-@click.option("--dry-run", is_flag=True,
-              help="Validate payload and print the event that would be sent without making an HTTP request")
+@click.option(
+    "--payload-file",
+    type=click.Path(exists=True, dir_okay=False),
+    help="Read JSON payload object from a file",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Validate payload and print the event that would be sent without making an HTTP request",
+)
 @click.pass_context
 def send(ctx, from_agent, to_agent, event_type, payload, payload_file, dry_run):
     """Send an event to another agent."""
@@ -229,10 +315,10 @@ def ack(ctx, event_id):
 
 
 @cli.command()
-@click.option("--agent", envvar="AGENT_BUS_AGENT",
-              required=True, help="Agent name to inspect")
-@click.option("--count", is_flag=True,
-              help="Print only the number of pending events")
+@click.option(
+    "--agent", envvar="AGENT_BUS_AGENT", required=True, help="Agent name to inspect"
+)
+@click.option("--count", is_flag=True, help="Print only the number of pending events")
 @click.pass_context
 def pending(ctx, agent, count):
     """List pending/delivered events for an agent."""
@@ -259,13 +345,25 @@ def pending(ctx, agent, count):
 
 
 @cli.command()
-@click.option("--agent", envvar="AGENT_BUS_AGENT",
-              required=False, default="",
-              help="Agent name to diagnose (defaults to AGENT_BUS_AGENT)")
-@click.option("--send-test", is_flag=True,
-              help="Also run a send->pending->ack round-trip self-test (writes a real event)")
+@click.option(
+    "--agent",
+    envvar="AGENT_BUS_AGENT",
+    required=False,
+    default="",
+    help="Agent name to diagnose (defaults to AGENT_BUS_AGENT)",
+)
+@click.option(
+    "--send-test",
+    is_flag=True,
+    help="Also run a send->pending->ack round-trip self-test (writes a real event)",
+)
+@click.option(
+    "--listener",
+    is_flag=True,
+    help="Also validate the current AWF/OpenCode listener environment",
+)
 @click.pass_context
-def doctor(ctx, agent, send_test):
+def doctor(ctx, agent, send_test, listener):
     """Diagnose configuration and connectivity to the Agent Bus server.
 
     Checks, in order: config present, server /health reachable, auth scope
@@ -275,7 +373,7 @@ def doctor(ctx, agent, send_test):
     """
     url = ctx.obj["url"]
     token = ctx.obj["token"]
-    total = 4 if send_test else 3
+    total = 3 + int(send_test) + int(listener)
     all_ok = True
 
     def report(idx, name, passed):
@@ -285,20 +383,44 @@ def doctor(ctx, agent, send_test):
     config_ok = bool(url and token and agent)
     report(1, "Config", config_ok)
     if not url:
-        click.echo("  AGENT_BUS_URL is empty. Fix: export AGENT_BUS_URL=http://<host>:8800", err=True)
+        click.echo(
+            "  AGENT_BUS_URL is empty. Fix: export AGENT_BUS_URL=http://<host>:8800",
+            err=True,
+        )
     if not token:
-        click.echo("  AGENT_BUS_TOKEN is not set. Fix: export AGENT_BUS_TOKEN=<your-token>", err=True)
+        click.echo(
+            "  AGENT_BUS_TOKEN is not set. Fix: export AGENT_BUS_TOKEN=<your-token>",
+            err=True,
+        )
     if not agent:
-        click.echo("  AGENT_BUS_AGENT is not set. Fix: export AGENT_BUS_AGENT=<your-agent>", err=True)
+        click.echo(
+            "  AGENT_BUS_AGENT is not set. Fix: export AGENT_BUS_AGENT=<your-agent>",
+            err=True,
+        )
     if config_ok:
-        masked = (token[:3] + "***" + token[-2:]) if len(token) > 5 else "***"
-        click.echo(f"  url={url} agent={agent} token={masked}")
+        click.echo(f"  url={url} agent={agent} token=set")
     all_ok = all_ok and config_ok
 
     # Without config the remaining checks cannot proceed meaningfully.
     if not config_ok:
         click.echo("\nFix the config above and re-run.", err=True)
         sys.exit(1)
+
+    listener_ok = True
+    if listener:
+        issues = listener_environment_issues()
+        for issue in issues:
+            click.echo(f"  {issue}", err=True)
+        listener_ok = not issues
+        if listener_ok:
+            warmup_issue = warm_network_path()
+            if warmup_issue:
+                click.echo(f"  {warmup_issue}", err=True)
+                listener_ok = False
+            else:
+                click.echo("  listener environment complete; network path warmed")
+        report(2, "Listener environment", listener_ok)
+        all_ok = all_ok and listener_ok
 
     headers = get_headers(token)
 
@@ -311,12 +433,21 @@ def doctor(ctx, agent, send_test):
             health_ok = True
             click.echo(f"  {url}/health -> status=ok")
         else:
-            click.echo(f"  {url}/health returned {resp.status_code}: {resp.text[:200]}", err=True)
-            click.echo("  Fix: ensure the Agent Bus server is running at AGENT_BUS_URL.", err=True)
+            click.echo(
+                f"  {url}/health returned {resp.status_code}: {resp.text[:200]}",
+                err=True,
+            )
+            click.echo(
+                "  Fix: ensure the Agent Bus server is running at AGENT_BUS_URL.",
+                err=True,
+            )
     except httpx.HTTPError as exc:
         click.echo(f"  Cannot reach {url}/health: {exc}", err=True)
-        click.echo(f"  Fix: check AGENT_BUS_URL and that the server is up (e.g. curl {url}/health).", err=True)
-    report(2, "Server /health", health_ok)
+        click.echo(
+            f"  Fix: check AGENT_BUS_URL and that the server is up (e.g. curl {url}/health).",
+            err=True,
+        )
+    report(2 + int(listener), "Server /health", health_ok)
     all_ok = all_ok and health_ok
 
     # --- 3. Auth scope valid (can list own pending events) ---
@@ -335,23 +466,32 @@ def doctor(ctx, agent, send_test):
                 click.echo(f"  listed {len(events)} pending event(s) for '{agent}'")
             elif resp.status_code == 401:
                 click.echo("  401 — token rejected.", err=True)
-                click.echo("  Fix: AGENT_BUS_TOKEN must match the server's AGENT_BUS_TOKEN (legacy) "
-                           "or an AGENT_BUS_AGENT_TOKENS entry.", err=True)
+                click.echo(
+                    "  Fix: AGENT_BUS_TOKEN must match the server's AGENT_BUS_TOKEN (legacy) "
+                    "or an AGENT_BUS_AGENT_TOKENS entry.",
+                    err=True,
+                )
             elif resp.status_code == 403:
                 click.echo(f"  403 — token not scoped for agent '{agent}'.", err=True)
-                click.echo("  Fix: set AGENT_BUS_AGENT to the agent this token belongs to, or update "
-                           "the server's AGENT_BUS_AGENT_TOKENS.", err=True)
+                click.echo(
+                    "  Fix: set AGENT_BUS_AGENT to the agent this token belongs to, or update "
+                    "the server's AGENT_BUS_AGENT_TOKENS.",
+                    err=True,
+                )
             else:
-                click.echo(f"  Unexpected {resp.status_code}: {resp.text[:200]}", err=True)
+                click.echo(
+                    f"  Unexpected {resp.status_code}: {resp.text[:200]}", err=True
+                )
         except httpx.HTTPError as exc:
             click.echo(f"  Request error: {exc}", err=True)
     else:
         click.echo("  Skipped (server unreachable).", err=True)
-    report(3, "Auth scope", auth_ok)
+    report(3 + int(listener), "Auth scope", auth_ok)
     all_ok = all_ok and auth_ok
 
     # --- 4. Optional send->pending->ack round-trip self-test ---
     if send_test:
+        idx = 4 + int(listener)
         rt_ok = False
         if not (health_ok and auth_ok):
             click.echo("  Skipped (prior checks failed).", err=True)
@@ -370,7 +510,10 @@ def doctor(ctx, agent, send_test):
                     if resp.status_code == 201:
                         test_event_id = resp.json().get("id")
                     else:
-                        click.echo(f"  Send failed: {resp.status_code} {resp.text[:200]}", err=True)
+                        click.echo(
+                            f"  Send failed: {resp.status_code} {resp.text[:200]}",
+                            err=True,
+                        )
 
                     if test_event_id is not None:
                         # Verify the event shows up in pending.
@@ -379,10 +522,17 @@ def doctor(ctx, agent, send_test):
                             params={"agent": agent},
                             headers=headers,
                         )
-                        ids = [e.get("id") for e in resp.json()] if resp.status_code == 200 else []
+                        ids = (
+                            [e.get("id") for e in resp.json()]
+                            if resp.status_code == 200
+                            else []
+                        )
                         seen = test_event_id in ids
                         if not seen:
-                            click.echo(f"  Event {test_event_id} not found in pending.", err=True)
+                            click.echo(
+                                f"  Event {test_event_id} not found in pending.",
+                                err=True,
+                            )
 
                         # Clean up: ACK the test event.
                         ack_resp = client.post(
@@ -393,16 +543,24 @@ def doctor(ctx, agent, send_test):
                         acked = ack_resp.status_code == 200
                         if seen and acked:
                             rt_ok = True
-                            click.echo(f"  sent id={test_event_id} -> pending -> acked (cleaned up)")
+                            click.echo(
+                                f"  sent id={test_event_id} -> pending -> acked (cleaned up)"
+                            )
                         else:
-                            click.echo(f"  round-trip incomplete: seen={seen} acked={acked}", err=True)
+                            click.echo(
+                                f"  round-trip incomplete: seen={seen} acked={acked}",
+                                err=True,
+                            )
                     else:
-                        click.echo("  No event id returned; cannot complete round-trip.", err=True)
+                        click.echo(
+                            "  No event id returned; cannot complete round-trip.",
+                            err=True,
+                        )
             except httpx.HTTPError as exc:
                 click.echo(f"  Round-trip error: {exc}", err=True)
             if not rt_ok and test_event_id is not None:
                 click.echo(f"  Manual cleanup: agent-bus ack {test_event_id}", err=True)
-        report(4, "Round-trip --send-test", rt_ok)
+        report(idx, "Round-trip --send-test", rt_ok)
         all_ok = all_ok and rt_ok
 
     click.echo("")
@@ -414,27 +572,67 @@ def doctor(ctx, agent, send_test):
 
 
 @cli.command()
-@click.option("--agent", envvar="AGENT_BUS_AGENT",
-               required=True, help="Agent name to listen as")
-@click.option("--on", "handlers", nargs=2, multiple=True,
-              metavar="TYPE COMMAND",
-              help="Run COMMAND for events of TYPE. ACK happens only on success.")
-@click.option("--handler-timeout", default=3600, show_default=True,
-              help="Maximum seconds a handler may run before failing")
-@click.option("--workdir", type=click.Path(file_okay=False),
-              help="Working directory for handler commands")
-@click.option("--ack-on-receive", is_flag=True,
-              help="ACK immediately after printing, without running a handler")
-@click.option("--once", is_flag=True,
-              help="Process one event and exit")
-@click.option("--exit-after-idle", default=None, type=int,
-              help="Exit after N seconds without receiving any events")
-@click.option("--max-event-attempts", default=3, type=int, show_default=True,
-              help="Skip an event after N consecutive processing failures (poison event protection)")
-@click.option("--ack/--no-ack", "legacy_ack", default=None, hidden=True,
-              help="Deprecated; use --ack-on-receive")
+@click.option(
+    "--agent", envvar="AGENT_BUS_AGENT", required=True, help="Agent name to listen as"
+)
+@click.option(
+    "--on",
+    "handlers",
+    nargs=2,
+    multiple=True,
+    metavar="TYPE COMMAND",
+    help="Run COMMAND for events of TYPE. ACK happens only on success.",
+)
+@click.option(
+    "--handler-timeout",
+    default=3600,
+    show_default=True,
+    help="Maximum seconds a handler may run before failing",
+)
+@click.option(
+    "--workdir",
+    type=click.Path(file_okay=False),
+    help="Working directory for handler commands",
+)
+@click.option(
+    "--ack-on-receive",
+    is_flag=True,
+    help="ACK immediately after printing, without running a handler",
+)
+@click.option("--once", is_flag=True, help="Process one event and exit")
+@click.option(
+    "--exit-after-idle",
+    default=None,
+    type=int,
+    help="Exit after N seconds without receiving any events",
+)
+@click.option(
+    "--max-event-attempts",
+    default=3,
+    type=int,
+    show_default=True,
+    help="Skip an event after N consecutive processing failures (poison event protection)",
+)
+@click.option(
+    "--ack/--no-ack",
+    "legacy_ack",
+    default=None,
+    hidden=True,
+    help="Deprecated; use --ack-on-receive",
+)
 @click.pass_context
-def listen(ctx, agent, handlers, handler_timeout, workdir, ack_on_receive, once, legacy_ack, exit_after_idle, max_event_attempts):
+def listen(
+    ctx,
+    agent,
+    handlers,
+    handler_timeout,
+    workdir,
+    ack_on_receive,
+    once,
+    legacy_ack,
+    exit_after_idle,
+    max_event_attempts,
+):
     """Listen for events via SSE and print them to stdout.
 
     On connect, receives all un-ACKed events, then waits for new ones.
@@ -444,7 +642,9 @@ def listen(ctx, agent, handlers, handler_timeout, workdir, ack_on_receive, once,
         ack_on_receive = legacy_ack
 
     handler_map = dict(handlers)
-    timeout_config = httpx.Timeout(float(exit_after_idle), connect=30.0) if exit_after_idle else None
+    timeout_config = (
+        httpx.Timeout(float(exit_after_idle), connect=30.0) if exit_after_idle else None
+    )
     shutdown_requested = False
     url = f"{ctx.obj['url']}/events/stream?agent={agent}"
     headers = {
@@ -471,7 +671,9 @@ def listen(ctx, agent, handlers, handler_timeout, workdir, ack_on_receive, once,
             return False
 
         if event_id in skipped_ids:
-            click.echo(f"  Skipping poison event {event_id} (previously skipped after {max_event_attempts} attempts)")
+            click.echo(
+                f"  Skipping poison event {event_id} (previously skipped after {max_event_attempts} attempts)"
+            )
             return False
 
         # Built-in control:shutdown — ACK and exit gracefully
@@ -479,7 +681,9 @@ def listen(ctx, agent, handlers, handler_timeout, workdir, ack_on_receive, once,
             payload = event_data.get("payload", {})
             target = payload.get("target") if isinstance(payload, dict) else None
             if target is not None and target != agent:
-                click.echo(f"  control:shutdown target={target} != agent={agent}; ignoring")
+                click.echo(
+                    f"  control:shutdown target={target} != agent={agent}; ignoring"
+                )
                 click.echo("")
                 return False
             click.echo("  control:shutdown received — shutting down gracefully.")
@@ -496,10 +700,14 @@ def listen(ctx, agent, handlers, handler_timeout, workdir, ack_on_receive, once,
         payload = event_data.get("payload", {})
         task_id = payload.get("task_id") if isinstance(payload, dict) else None
 
-        click.echo(f"[{now}] {event_data['type']} id={event_id} task_id={task_id or '-'}")
+        click.echo(
+            f"[{now}] {event_data['type']} id={event_id} task_id={task_id or '-'}"
+        )
         click.echo(f"  From: {event_data['from_agent']} → To: {event_data['to_agent']}")
         click.echo(f"  Status: {event_data['status']}")
-        click.echo(f"  Payload: {json.dumps(event_data['payload'], ensure_ascii=False)}")
+        click.echo(
+            f"  Payload: {json.dumps(event_data['payload'], ensure_ascii=False)}"
+        )
         click.echo("")
 
         handler = handler_map.get(event_data["type"])
@@ -512,17 +720,31 @@ def listen(ctx, agent, handlers, handler_timeout, workdir, ack_on_receive, once,
                 click.echo(f"  Handler template missing field: {exc}", err=True)
                 failure_counts[event_id] = failure_counts.get(event_id, 0) + 1
                 if failure_counts[event_id] >= max_event_attempts:
-                    _post_fail(ctx.obj["url"], ctx.obj["token"], event_id, f"Handler template missing field: {exc}")
+                    _post_fail(
+                        ctx.obj["url"],
+                        ctx.obj["token"],
+                        event_id,
+                        f"Handler template missing field: {exc}",
+                    )
                     skipped_ids.add(event_id)
-                    click.echo(f"  Skipping poison event {event_id} after {max_event_attempts} consecutive failed attempts (handler template error)")
+                    click.echo(
+                        f"  Skipping poison event {event_id} after {max_event_attempts} consecutive failed attempts (handler template error)"
+                    )
             else:
                 should_ack = run_handler(command, handler_timeout, workdir)
                 if not should_ack:
                     failure_counts[event_id] = failure_counts.get(event_id, 0) + 1
                     if failure_counts[event_id] >= max_event_attempts:
-                        _post_fail(ctx.obj["url"], ctx.obj["token"], event_id, f"Handler failed after {max_event_attempts} consecutive attempts")
+                        _post_fail(
+                            ctx.obj["url"],
+                            ctx.obj["token"],
+                            event_id,
+                            f"Handler failed after {max_event_attempts} consecutive attempts",
+                        )
                         skipped_ids.add(event_id)
-                        click.echo(f"  Skipping poison event {event_id} after {max_event_attempts} consecutive failed attempts")
+                        click.echo(
+                            f"  Skipping poison event {event_id} after {max_event_attempts} consecutive failed attempts"
+                        )
         elif ack_on_receive:
             should_ack = True
         else:
@@ -554,7 +776,10 @@ def listen(ctx, agent, handlers, handler_timeout, workdir, ack_on_receive, once,
                         # response content, without having called `read()`" — which was
                         # swallowed as an "Unexpected error" and spun the reconnect loop.
                         resp.read()
-                        click.echo(f"Error: Server returned {resp.status_code}: {resp.text}", err=True)
+                        click.echo(
+                            f"Error: Server returned {resp.status_code}: {resp.text}",
+                            err=True,
+                        )
                         time.sleep(retry_delay)
                         retry_delay = min(retry_delay * 2, max_retry_delay)
                         continue
@@ -568,7 +793,11 @@ def listen(ctx, agent, handlers, handler_timeout, workdir, ack_on_receive, once,
                     current_event = None
 
                     for line_bytes in resp.iter_lines():
-                        line = line_bytes.decode("utf-8") if isinstance(line_bytes, bytes) else line_bytes
+                        line = (
+                            line_bytes.decode("utf-8")
+                            if isinstance(line_bytes, bytes)
+                            else line_bytes
+                        )
 
                         if line == "":
                             # Empty line = end of event, process it
@@ -579,18 +808,33 @@ def listen(ctx, agent, handlers, handler_timeout, workdir, ack_on_receive, once,
                                     if once or shutdown_requested:
                                         return
                                 except json.JSONDecodeError:
-                                    click.echo(f"Warning: could not parse event data: {buffer}", err=True)
+                                    click.echo(
+                                        f"Warning: could not parse event data: {buffer}",
+                                        err=True,
+                                    )
                                     if current_id is not None:
                                         try:
                                             eid = int(current_id)
                                         except (ValueError, TypeError):
                                             pass
                                         else:
-                                            failure_counts[eid] = failure_counts.get(eid, 0) + 1
-                                            if failure_counts[eid] >= max_event_attempts:
-                                                _post_fail(ctx.obj["url"], ctx.obj["token"], eid, f"JSON decode error after {max_event_attempts} consecutive attempts")
+                                            failure_counts[eid] = (
+                                                failure_counts.get(eid, 0) + 1
+                                            )
+                                            if (
+                                                failure_counts[eid]
+                                                >= max_event_attempts
+                                            ):
+                                                _post_fail(
+                                                    ctx.obj["url"],
+                                                    ctx.obj["token"],
+                                                    eid,
+                                                    f"JSON decode error after {max_event_attempts} consecutive attempts",
+                                                )
                                                 skipped_ids.add(eid)
-                                                click.echo(f"  Skipping poison event {eid} after {max_event_attempts} consecutive failed attempts (JSON decode error)")
+                                                click.echo(
+                                                    f"  Skipping poison event {eid} after {max_event_attempts} consecutive failed attempts (JSON decode error)"
+                                                )
                             buffer = ""
                             current_id = None
                             current_event = None
@@ -608,7 +852,9 @@ def listen(ctx, agent, handlers, handler_timeout, workdir, ack_on_receive, once,
             click.echo(f"No events received for {exit_after_idle}s; exiting.")
             return
         except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError) as e:
-            click.echo(f"Connection lost: {e}. Reconnecting in {retry_delay}s...", err=True)
+            click.echo(
+                f"Connection lost: {e}. Reconnecting in {retry_delay}s...", err=True
+            )
             time.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, max_retry_delay)
         except KeyboardInterrupt:
