@@ -24,6 +24,11 @@ near-term operating stance: keep the relay lightweight, use private transport
 for exposed deployments, and improve diagnostics before adding heavier
 infrastructure.
 
+See [docs/recommended-practices.md](docs/recommended-practices.md) for the
+near-term operating stance: keep the relay lightweight, borrow mature queue
+reliability habits, and improve client diagnostics before adding heavier
+infrastructure.
+
 ## Architecture
 
 ```
@@ -76,7 +81,24 @@ AGENT_BUS_PORT=8800
 AGENT_BUS_DB_PATH=/opt/agent-bus/data/agent-bus.db
 ```
 
-For local testing, use `AGENT_BUS_URL=http://localhost:8800`.
+For a VPS, prefer private-network access such as Tailscale:
+
+```bash
+export AGENT_BUS_URL=http://<vps-tailscale-ip>:8800
+```
+
+Keep port `8800` closed on the public internet unless it is protected by HTTPS,
+a tunnel, or another trusted private network boundary. For local testing, use
+`AGENT_BUS_URL=http://localhost:8800`.
+
+The recommended first production topology is:
+
+```text
+Mac Codex client -> VPS Agent Bus over Tailscale -> Windows Open Code listener
+```
+
+For this topology, the VPS Tailscale URL should work. The VPS public IP does not
+need to expose `8800/tcp`.
 
 For a small trusted network of your own machines, prefer a private transport
 such as Tailscale instead of exposing `8800/tcp` on the public internet:
@@ -94,7 +116,7 @@ Any agent that wants to dispatch a task. The sender does not need to know
 which tool the receiver will use.
 
 ```bash
-export AGENT_BUS_URL=http://your-server:8800
+export AGENT_BUS_URL=http://<agent-bus-host>:8800
 export AGENT_BUS_TOKEN=<architect-token>
 export AGENT_BUS_AGENT=architect
 
@@ -115,7 +137,7 @@ local runtime. **The runtime choice is entirely up to the receiver.** Agent Bus
 has no opinion about which tool you use.
 
 ```bash
-export AGENT_BUS_URL=http://your-server:8800
+export AGENT_BUS_URL=http://<agent-bus-host>:8800
 export AGENT_BUS_TOKEN=<coder-token>
 export AGENT_BUS_AGENT=coder
 
@@ -207,6 +229,8 @@ workflows, `task:completed` with `artifact_uri` is a reasonable alternative.
 | GET | `/health` | None | Health check |
 
 All authenticated endpoints use `Authorization: Bearer <AGENT_BUS_TOKEN>`.
+Bearer tokens are sent with each request. Use Tailscale, HTTPS, or another
+trusted private transport for any non-local deployment.
 
 ## What Agent Bus Does NOT Provide
 

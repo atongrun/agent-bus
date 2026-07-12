@@ -11,7 +11,7 @@ For v0.2 and v0.2.x, keep the core stack:
 - FastAPI HTTP API for event creation, inspection, and ACK.
 - SQLite for durable storage.
 - SSE for recipient-side delivery.
-- CLI listeners or external adapters for endpoint integration.
+- CLI listeners for Mac, Windows, and localhost agents.
 - Per-agent bearer tokens over a private transport such as Tailscale.
 
 This matches the project's operational goals: light deployment, second-level
@@ -38,7 +38,7 @@ dead-letter state before introducing an external queue.
 The client path should be boring:
 
 - A new machine should have one documented setup path.
-- A configured machine should have one command to run the local CLI or adapter.
+- A configured machine should have one command to run the local CLI.
 - A single diagnostic command should check URL, token, health, auth, send,
   pending, and ACK.
 - Troubleshooting should distinguish service failure, private-network failure,
@@ -53,7 +53,7 @@ The recommended first deployment is a private-network relay between trusted
 machines:
 
 ```text
-sender agent -> VPS Agent Bus over Tailscale -> receiver adapter -> local tool
+Mac client -> VPS Agent Bus over Tailscale -> Windows receiver
 ```
 
 The VPS should answer on its Tailscale address. Public `8800/tcp` does not need

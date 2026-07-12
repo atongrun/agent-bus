@@ -22,3 +22,7 @@ data/
 .DS_Store
 Thumbs.db
 .omx/
+
+# transient run markers (not artifacts)
+.awf/artifacts/.opencode-done
+.awf/artifacts/.awf-done-*

@@ -75,13 +75,13 @@ patterns: durable storage, explicit ACK, redelivery, retry limits, task state,
 and observability. Agent Bus should borrow those patterns without adopting their
 operational weight too early.
 
-For the current small trusted-agent use case, the recommended practice is:
+For the current Mac -> VPS -> Windows use case, the standard practice is:
 
 - keep a durable single-node relay,
 - ACK after successful handler completion,
 - require idempotent handlers,
-- keep pending and un-ACKed state inspectable,
-- improve diagnostics before adding external infrastructure.
+- expose pending/un-ACKed state,
+- add clear diagnostics before adding external infrastructure.
 
 Move to a dedicated queue or workflow engine only when there is sustained
 multi-worker load, complex retry routing, many independent consumers, or
@@ -104,6 +104,11 @@ In this mode:
 
 The legacy `AGENT_BUS_TOKEN` shared-token mode remains available for local
 development and migration, but it should not be used for exposed deployments.
+
+Agent Bus bearer tokens are presented on every authenticated request. For
+non-local deployments, run the service behind Tailscale, HTTPS, a tunnel, or an
+equivalent private transport. Public HTTP on `8800/tcp` is not a recommended
+long-term deployment boundary because tokens would be sent over plaintext.
 
 ## v0.2 Non-Goals
 
