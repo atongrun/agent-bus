@@ -146,8 +146,10 @@ def cli(ctx, url, token):
 @click.option("--payload", default="{}", help="JSON payload string")
 @click.option("--payload-file", type=click.Path(exists=True, dir_okay=False),
               help="Read JSON payload object from a file")
+@click.option("--dry-run", is_flag=True,
+              help="Validate payload and print the event that would be sent without making an HTTP request")
 @click.pass_context
-def send(ctx, from_agent, to_agent, event_type, payload, payload_file):
+def send(ctx, from_agent, to_agent, event_type, payload, payload_file, dry_run):
     """Send an event to another agent."""
     payload_obj = _load_payload(payload, payload_file)
 
@@ -157,6 +159,10 @@ def send(ctx, from_agent, to_agent, event_type, payload, payload_file):
         "type": event_type,
         "payload": payload_obj,
     }
+
+    if dry_run:
+        click.echo(json.dumps(body, indent=2))
+        return
 
     try:
         with httpx.Client(timeout=10) as client:
