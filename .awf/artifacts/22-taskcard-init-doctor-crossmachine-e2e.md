@@ -30,11 +30,15 @@ exporting the values that `init` is responsible for.
 
 1. Start from the dispatched task branch at the exact event commit.
 2. Run the existing automated tests for listener configuration.
-3. In a fresh Windows Git Bash session, run `agent-bus init` for the coder role
-   using the existing local AWF environment, agent-bus checkout, Agent Workflow
-   scripts directory, and private Agent Bus URL.
-4. Source only the generated listener environment, then run `agent-bus doctor
-   --listener`.
+3. In a fresh Windows Git Bash subprocess, run `agent-bus init` for the coder
+   role using the committed non-secret bridge fixture at
+   `.awf/fixtures/init-doctor-awf-env.sh`, the current checkout, the repository's
+   existing `scripts/` directory, and the inherited private Agent Bus URL.
+   Generate the temporary listener env under `.awf/tmp/`, not in the user's
+   external config directory.
+4. Source only that generated listener environment, then run `agent-bus doctor
+   --listener`. Remove the generated `.awf/tmp/` directory after recording
+   redacted results so it is never committed.
 5. Record redacted evidence showing generated-file permissions, required
    variable presence, proxy bypass, path values, warmup result, server health,
    and auth-scope result. Never record token values.
@@ -78,6 +82,10 @@ exporting the values that `init` is responsible for.
     Windows Git Bash path conversion, and network warmup.
   - `tests/test_listener_config.py`: existing focused regression coverage.
   - `README.md`: documented receiver-side `init` / `doctor --listener` flow.
+- **Executor acceptance fixture**:
+  - `.awf/fixtures/init-doctor-awf-env.sh` contains no secret. It only asserts
+    that the trusted runner supplied `AWF_CODER_TOKEN` and allows `init` to test
+    its token-variable bridge without reading external user config.
 - **Existing local inputs**: use the already provisioned AWF dispatch env,
   private Agent Bus URL, checkout paths, and role token. Do not print, copy into
   the repository, or transmit credential values in reports.
@@ -113,8 +121,8 @@ exporting the values that `init` is responsible for.
 
 - [ ] Existing focused tests pass before the real-machine run.
 - [ ] `agent-bus init` succeeds in a fresh Windows Git Bash session using the
-      documented arguments and writes the configured listener env with private
-      permissions.
+      repo-contained non-secret AWF fixture and writes the temporary listener
+      env with private permissions.
 - [ ] Re-running `init` without `--force` refuses to overwrite the file and
       preserves its contents.
 - [ ] The generated file contains a reference to the selected AWF role-token
@@ -126,6 +134,11 @@ exporting the values that `init` is responsible for.
 - [ ] `agent-bus doctor --listener` exits `0` and reports PASS for listener
       environment, network warmup, server health, and auth scope.
 - [ ] No manual exports are required after sourcing the generated listener env.
+- [ ] `.awf/tmp/` is removed before completion; the committed branch contains no
+      generated listener config or secret value.
+- [ ] The reviewer separately repeats `init` / `doctor --listener` with the real
+      external AWF and Agent Workflow paths; executor evidence must not claim
+      that external-path check was performed.
 - [ ] If no implementation blocker is found, the branch contains only this
       TaskCard and the required evidence report; no production code is changed.
 
@@ -136,31 +149,34 @@ Git Bash, prefer the checkout's `.venv/Scripts/python.exe` when present.
 
 ```bash
 # Automated baseline
-.venv/Scripts/python.exe -m pytest tests/test_listener_config.py -q
-.venv/Scripts/python.exe -m pytest tests/ -q
+.venv/Scripts/python.exe -m unittest tests.test_listener_config -v
+.venv/Scripts/python.exe -m unittest discover -s tests -v
 
-# Generate into a task-specific temporary path so existing user config is not
-# overwritten. Replace placeholders locally; do not paste secrets into argv.
+# Generate entirely inside the task checkout. The fixture contains only a
+# reference to the inherited scoped variable; it contains no token value.
 .venv/Scripts/agent-bus.exe init \
   --agent coder \
-  --server-url http://<private-agent-bus-host>:8800 \
-  --awf-env ~/.config/awf/dispatch.env \
-  --repo-dir <agent-bus-checkout> \
-  --script-dir <agent-workflow-checkout>/scripts \
-  --config ~/.config/agent-bus/listener-e2e.env
+  --server-url "$AGENT_BUS_URL" \
+  --awf-env .awf/fixtures/init-doctor-awf-env.sh \
+  --repo-dir . \
+  --script-dir scripts \
+  --config .awf/tmp/listener-e2e.env
 
 # Must refuse overwrite without --force.
 .venv/Scripts/agent-bus.exe init \
   --agent coder \
-  --server-url http://<private-agent-bus-host>:8800 \
-  --awf-env ~/.config/awf/dispatch.env \
-  --repo-dir <agent-bus-checkout> \
-  --script-dir <agent-workflow-checkout>/scripts \
-  --config ~/.config/agent-bus/listener-e2e.env
+  --server-url "$AGENT_BUS_URL" \
+  --awf-env .awf/fixtures/init-doctor-awf-env.sh \
+  --repo-dir . \
+  --script-dir scripts \
+  --config .awf/tmp/listener-e2e.env
 
-# Open a new Git Bash process, then source only the generated file.
-source ~/.config/agent-bus/listener-e2e.env
+# In a fresh Git Bash subprocess, source only the generated file.
+source .awf/tmp/listener-e2e.env
 .venv/Scripts/agent-bus.exe doctor --listener
+
+# Remove generated local config before writing/committing the report.
+rm -rf .awf/tmp
 ```
 
 For redacted evidence, report variable names and boolean presence only. The
