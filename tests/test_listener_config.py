@@ -223,7 +223,6 @@ class ListenerConfigTests(unittest.TestCase):
             ],
         )
 
-
     # ------------------------------------------------------------------
     # Windows-specific permission tests
     # ------------------------------------------------------------------
@@ -239,7 +238,13 @@ class ListenerConfigTests(unittest.TestCase):
                     mock_run.return_value.returncode = 0
                     _make_private(path)
             mock_run.assert_called_once_with(
-                ["icacls", os.fspath(path), "/inheritance:r", "/grant:r", f"{username}:F"],
+                [
+                    "icacls",
+                    os.fspath(path),
+                    "/inheritance:r",
+                    "/grant:r",
+                    f"{username}:F",
+                ],
                 capture_output=True,
                 text=True,
                 errors="backslashreplace",
@@ -253,7 +258,9 @@ class ListenerConfigTests(unittest.TestCase):
             path.write_text("TOKEN=abc\n", encoding="utf-8")
             with patch("client.listener_config.os.name", "nt"):
                 with patch.dict("os.environ", {"USERNAME": "", "USER": ""}):
-                    with self.assertRaisesRegex(OSError, "cannot determine Windows username"):
+                    with self.assertRaisesRegex(
+                        OSError, "cannot determine Windows username"
+                    ):
                         _make_private(path)
 
     def test_windows_icacls_nonzero_return_raises(self):

@@ -112,7 +112,9 @@ def _make_private_windows(path: Path) -> None:
     """
     username = os.environ.get("USERNAME") or os.environ.get("USER")
     if not username:
-        raise OSError("cannot determine Windows username; password file would be unlocked")
+        raise OSError(
+            "cannot determine Windows username; password file would be unlocked"
+        )
     argv = ["icacls", os.fspath(path), "/inheritance:r", "/grant:r", f"{username}:F"]
     try:
         completed = subprocess.run(
