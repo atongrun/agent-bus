@@ -102,6 +102,45 @@ export no_proxy=\"$NO_PROXY\"
 """
 
 
+def _make_private_windows(path: Path) -> None:
+    """Lock *path* to the current user via icacls on Windows.
+
+    Removes inherited ACE entries and grants Full control only to the
+    current user.  Raises ``OSError`` when the username cannot be
+    determined, ``icacls`` cannot start, or ``icacls`` returns non-zero
+    (fail-closed).
+    """
+    username = os.environ.get("USERNAME") or os.environ.get("USER")
+    if not username:
+        raise OSError("cannot determine Windows username; password file would be unlocked")
+    argv = ["icacls", os.fspath(path), "/inheritance:r", "/grant:r", f"{username}:F"]
+    try:
+        completed = subprocess.run(
+            argv, capture_output=True, text=True, errors="backslashreplace", timeout=30
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise OSError(f"icacls failed to start: {exc}") from exc
+    if completed.returncode != 0:
+        stderr = completed.stderr.strip()
+        raise OSError(
+            f"icacls returned {completed.returncode}"
+            + (f": {stderr}" if stderr else "")
+        )
+
+
+def _make_private(path: Path) -> None:
+    """Ensure *path* is readable/writable only by its owner.
+
+    On POSIX calls ``chmod(0o600)``.  On Windows runs ``icacls`` to
+    remove inherited ACEs and grant Full control to the current user
+    only.
+    """
+    if os.name == "nt":
+        _make_private_windows(path)
+    else:
+        path.chmod(0o600)
+
+
 def write_listener_env(path: Path, content: str, *, force: bool = False) -> None:
     """Atomically write a private listener environment file."""
     path = path.expanduser()
@@ -111,9 +150,9 @@ def write_listener_env(path: Path, content: str, *, force: bool = False) -> None
     temporary = path.with_name(f".{path.name}.tmp")
     try:
         temporary.write_text(content, encoding="utf-8")
-        temporary.chmod(0o600)
+        _make_private(temporary)
         temporary.replace(path)
-        path.chmod(0o600)
+        _make_private(path)
     finally:
         if temporary.exists():
             temporary.unlink()

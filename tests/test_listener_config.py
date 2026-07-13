@@ -1,16 +1,18 @@
 """Tests for repeatable workflow-listener initialization."""
 
+import os
 import stat
 import tempfile
 import unittest
 from pathlib import Path
 from pathlib import PureWindowsPath
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from click.testing import CliRunner
 
 from client.cli import cli
 from client.listener_config import (
+    _make_private,
     listener_environment_issues,
     render_listener_env,
     source_path,
@@ -73,7 +75,9 @@ class ListenerConfigTests(unittest.TestCase):
                 script_dir=Path("/workspace/scripts"),
             )
 
-    def test_init_writes_private_file_and_never_prints_token(self):
+    @patch("client.listener_config.subprocess.run")
+    def test_init_writes_private_file_and_never_prints_token(self, mock_run):
+        mock_run.return_value.returncode = 0
         runner = CliRunner()
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -109,7 +113,18 @@ class ListenerConfigTests(unittest.TestCase):
             self.assertNotIn("top-secret", output.read_text(encoding="utf-8"))
             self.assertIn("Load it with: source '", result.output)
             self.assertIn("listener.env'", result.output)
-            self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o600)
+            if os.name != "nt":
+                self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o600)
+            else:
+                # Windows: verify icacls was called for both temp and final file
+                self.assertEqual(mock_run.call_count, 2)
+                for call_args in mock_run.call_args_list:
+                    argv = call_args[0][0]
+                    self.assertEqual(argv[0], "icacls")
+                    self.assertEqual(argv[2], "/inheritance:r")
+                    self.assertEqual(argv[3], "/grant:r")
+                    self.assertTrue(argv[4].endswith(":F"))
+                self.assertTrue(output.stat().st_size > 0)
 
     def test_init_refuses_to_overwrite_without_force(self):
         runner = CliRunner()
@@ -207,6 +222,62 @@ class ListenerConfigTests(unittest.TestCase):
                 ],
             ],
         )
+
+
+    # ------------------------------------------------------------------
+    # Windows-specific permission tests
+    # ------------------------------------------------------------------
+
+    def test_windows_icacls_argv_is_correct(self):
+        """Windows _make_private calls icacls with the expected argv."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "secret.env"
+            path.write_text("TOKEN=abc\n", encoding="utf-8")
+            username = os.environ.get("USERNAME") or os.environ.get("USER", "")
+            with patch("client.listener_config.os.name", "nt"):
+                with patch("client.listener_config.subprocess.run") as mock_run:
+                    mock_run.return_value.returncode = 0
+                    _make_private(path)
+            mock_run.assert_called_once_with(
+                ["icacls", os.fspath(path), "/inheritance:r", "/grant:r", f"{username}:F"],
+                capture_output=True,
+                text=True,
+                errors="backslashreplace",
+                timeout=30,
+            )
+
+    def test_windows_icacls_missing_username_raises(self):
+        """Windows _make_private raises OSError when username is unavailable."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "secret.env"
+            path.write_text("TOKEN=abc\n", encoding="utf-8")
+            with patch("client.listener_config.os.name", "nt"):
+                with patch.dict("os.environ", {"USERNAME": "", "USER": ""}):
+                    with self.assertRaisesRegex(OSError, "cannot determine Windows username"):
+                        _make_private(path)
+
+    def test_windows_icacls_nonzero_return_raises(self):
+        """Windows _make_private raises OSError when icacls returns non-zero."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "secret.env"
+            path.write_text("TOKEN=abc\n", encoding="utf-8")
+            with patch("client.listener_config.os.name", "nt"):
+                with patch("client.listener_config.subprocess.run") as mock_run:
+                    mock_run.return_value.returncode = 1
+                    mock_run.return_value.stderr = "Access denied"
+                    with self.assertRaisesRegex(OSError, "icacls returned 1"):
+                        _make_private(path)
+
+    def test_windows_icacls_start_failure_raises(self):
+        """Windows _make_private raises OSError when icacls cannot start."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "secret.env"
+            path.write_text("TOKEN=abc\n", encoding="utf-8")
+            with patch("client.listener_config.os.name", "nt"):
+                with patch("client.listener_config.subprocess.run") as mock_run:
+                    mock_run.side_effect = OSError("icacls not found")
+                    with self.assertRaisesRegex(OSError, "icacls failed to start"):
+                        _make_private(path)
 
 
 if __name__ == "__main__":
