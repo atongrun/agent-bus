@@ -12,39 +12,39 @@ environment, bridges the matching AWF role token without copying its value,
 adds the relay host to `NO_PROXY`, records the Agent Workflow paths and OpenCode
 flag, checks the environment, and warms the private-network path.
 
-The remaining gap is not another implementation pass. It is a real
-fresh-session acceptance run on the Windows executor that previously required
-hand-assembled environment variables. This card verifies that the merged
-commands replace that manual reconstruction and records evidence. Code changes
-are allowed only when the acceptance run exposes a deterministic blocker in the
-existing `init` / `doctor --listener` path.
+The first real Windows run exposed one deterministic implementation blocker:
+`write_listener_env()` calls `Path.chmod(0o600)`, but Windows `os.chmod` cannot
+create an owner-only ACL. The generated credential-bearing file remained
+group-readable (`0666` as reported by Python/Git Bash). Skipping the assertion on
+Windows would hide the vulnerability rather than fix it.
+
+This rework fixes that blocker without giving the model any live token. The
+executor implements and tests Windows ACL lockdown using a dummy fixture. The
+reviewer then performs the real external-path `init` / `doctor --listener`
+acceptance in a trusted shell and records only PASS/FAIL evidence.
 
 ## Goal
 
-From a fresh Windows Git Bash session, use the merged `agent-bus init` output to
-load the complete coder-listener environment and make `agent-bus doctor
---listener` pass against the existing private Agent Bus server, without manually
-exporting the values that `init` is responsible for.
+Make `agent-bus init` actually write an owner-only listener environment on
+Windows, preserve POSIX `0600` behavior, and hand the reviewer a tested branch
+for trusted-shell live acceptance.
 
 ## Scope
 
 1. Start from the dispatched task branch at the exact event commit.
 2. Run the existing automated tests for listener configuration.
-3. In a fresh Windows Git Bash subprocess, run `agent-bus init` for the coder
-   role using the committed non-secret bridge fixture at
-   `.awf/fixtures/init-doctor-awf-env.sh`, the current checkout, the repository's
-   existing `scripts/` directory, and the inherited private Agent Bus URL.
-   Generate the temporary listener env under `.awf/tmp/`, not in the user's
-   external config directory.
-4. Source only that generated listener environment, then run `agent-bus doctor
-   --listener`. Remove the generated `.awf/tmp/` directory after recording
-   redacted results so it is never committed.
-5. Record redacted evidence showing generated-file permissions, required
-   variable presence, proxy bypass, path values, warmup result, server health,
-   and auth-scope result. Never record token values.
-6. If and only if a deterministic defect in the merged `init` / `doctor
-   --listener` implementation blocks an acceptance criterion, make the smallest
-   fix and add a focused regression test for that defect.
+3. In `client/listener_config.py`, keep `chmod(0o600)` on POSIX. On Windows,
+   remove inherited ACL entries and grant Full control only to the current user
+   via `icacls`, invoked as argv with `shell=False`.
+4. Fail closed: if the Windows username is unavailable, `icacls` cannot start,
+   or `icacls` returns non-zero, `init` must fail and must not report success for
+   a potentially exposed credential file.
+5. Add focused tests that lock the POSIX path, Windows `icacls` argv, and Windows
+   failure behavior. Do not skip the permission assertion on Windows.
+6. Run `init` only with the committed non-secret fixture and a dummy token. Do
+   not run live authenticated `doctor`; that is reviewer-only.
+7. Write the required ImplementationReport with test evidence and the explicitly
+   deferred unrelated Windows poison-handler failures.
 
 ## Out of Scope
 
@@ -58,6 +58,8 @@ exporting the values that `init` is responsible for.
   occurs, record it, restart the one-shot command once, and continue.
 - Do not clean old Agent Bus events or delete any remote E2E branches.
 - Do not add dependencies, new configuration formats, or unrelated tests.
+- Do not modify or skip permission assertions merely to make Windows green.
+- Do not fix the unrelated Windows poison-handler path failures in this task.
 - Do not treat DERP/peer-relay operation as failure when the warmup command and
   normal HTTP checks succeed.
 
@@ -86,9 +88,11 @@ exporting the values that `init` is responsible for.
   - `.awf/fixtures/init-doctor-awf-env.sh` contains no secret. It only asserts
     that the trusted runner supplied `AWF_CODER_TOKEN` and allows `init` to test
     its token-variable bridge without reading external user config.
-- **Existing local inputs**: use the already provisioned AWF dispatch env,
-  private Agent Bus URL, checkout paths, and role token. Do not print, copy into
-  the repository, or transmit credential values in reports.
+- **Reference implementation pattern**: on Windows, use `USERNAME` (fallback
+  `USER`) and run `icacls <path> /inheritance:r /grant:r <user>:F`. This task
+  must fail closed when lockdown fails.
+- **Executor environment**: no live Agent Bus token is available or required.
+  Use only a literal dummy value for repo-local `init` verification.
 
 ## Constraints
 
@@ -98,17 +102,15 @@ exporting the values that `init` is responsible for.
   generated listener env. These commands can disclose live scoped tokens in
   non-interactive logs and are a task failure even if the value is later
   redacted from the report.
-- Treat `agent-bus init` and `agent-bus doctor --listener` as opaque commands:
-  inspect only their normal PASS/FAIL output. Do not inspect credential values
-  before or after running them.
+- Do not run live `agent-bus doctor --listener`; authenticated live verification
+  is reviewer-only.
 - If variable presence must be checked separately, use a fixed allowlist and
   print only `NAME=SET` / `NAME=MISSING`; never print values. Token-variable
   presence is proven by successful auth scope in `doctor`, not by echoing it.
 - Run from a clean worktree. If the runner reports a dirty tree or unpushed
   commits, stop and report; do not reset, clean, or overwrite them.
-- Use a genuinely fresh Git Bash process for acceptance. Do not inherit a shell
-  that already contains manually exported `AGENT_BUS_*`, `AWF_*`, `NO_PROXY`, or
-  OpenCode listener variables.
+- The executor process must not inherit any real `AGENT_BUS_TOKEN` or
+  `AWF_*_TOKEN` value.
 - The generated file must reference the role-token variable; it must not contain
   or print the token value.
 - Redact private host values and personal absolute paths in the report. It is
@@ -119,28 +121,25 @@ exporting the values that `init` is responsible for.
 
 ## Acceptance Criteria
 
-- [ ] Existing focused tests pass before the real-machine run.
-- [ ] `agent-bus init` succeeds in a fresh Windows Git Bash session using the
-      repo-contained non-secret AWF fixture and writes the temporary listener
-      env with private permissions.
+- [ ] POSIX writes still apply mode `0600`.
+- [ ] Windows writes call `icacls` with an argv equivalent to
+      `<path> /inheritance:r /grant:r <current-user>:F` and no shell.
+- [ ] Missing username, process-start error, or non-zero `icacls` makes `init`
+      fail instead of claiming the file is private.
+- [ ] Focused listener-config tests pass on Windows without skipping the
+      permission guarantee.
+- [ ] `agent-bus init` succeeds with the repo-contained fixture and a literal
+      dummy token; no live credential is used by the executor.
 - [ ] Re-running `init` without `--force` refuses to overwrite the file and
       preserves its contents.
 - [ ] The generated file contains a reference to the selected AWF role-token
       variable but contains no token value.
-- [ ] After sourcing only the generated file, `AGENT_BUS_AGENT`,
-      `AGENT_BUS_TOKEN`, `AWF_REPO_DIR`, `AWF_SCRIPT_DIR`,
-      `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`, `NO_PROXY`, and the network
-      warmup settings are present and correct.
-- [ ] `agent-bus doctor --listener` exits `0` and reports PASS for listener
-      environment, network warmup, server health, and auth scope.
-- [ ] No manual exports are required after sourcing the generated listener env.
 - [ ] `.awf/tmp/` is removed before completion; the committed branch contains no
       generated listener config or secret value.
 - [ ] The reviewer separately repeats `init` / `doctor --listener` with the real
-      external AWF and Agent Workflow paths; executor evidence must not claim
-      that external-path check was performed.
-- [ ] If no implementation blocker is found, the branch contains only this
-      TaskCard and the required evidence report; no production code is changed.
+      external AWF and Agent Workflow paths and verifies ACLs; executor evidence
+      must not claim that live check was performed.
+- [ ] The required ImplementationReport exists before a review event is sent.
 
 ## Verification Commands
 
@@ -150,30 +149,24 @@ Git Bash, prefer the checkout's `.venv/Scripts/python.exe` when present.
 ```bash
 # Automated baseline
 .venv/Scripts/python.exe -m unittest tests.test_listener_config -v
-.venv/Scripts/python.exe -m unittest discover -s tests -v
 
-# Generate entirely inside the task checkout. The fixture contains only a
-# reference to the inherited scoped variable; it contains no token value.
-.venv/Scripts/agent-bus.exe init \
+# Safe repo-local smoke with a dummy value only; do not run live doctor.
+AWF_CODER_TOKEN=dummy-not-a-live-token .venv/Scripts/agent-bus.exe init \
   --agent coder \
-  --server-url "$AGENT_BUS_URL" \
+  --server-url http://127.0.0.1:8800 \
   --awf-env .awf/fixtures/init-doctor-awf-env.sh \
   --repo-dir . \
   --script-dir scripts \
   --config .awf/tmp/listener-e2e.env
 
 # Must refuse overwrite without --force.
-.venv/Scripts/agent-bus.exe init \
+AWF_CODER_TOKEN=dummy-not-a-live-token .venv/Scripts/agent-bus.exe init \
   --agent coder \
-  --server-url "$AGENT_BUS_URL" \
+  --server-url http://127.0.0.1:8800 \
   --awf-env .awf/fixtures/init-doctor-awf-env.sh \
   --repo-dir . \
   --script-dir scripts \
   --config .awf/tmp/listener-e2e.env
-
-# In a fresh Git Bash subprocess, source only the generated file.
-source .awf/tmp/listener-e2e.env
-.venv/Scripts/agent-bus.exe doctor --listener
 
 # Remove generated local config before writing/committing the report.
 rm -rf .awf/tmp
@@ -185,9 +178,7 @@ must not be used even temporarily.
 
 ## Rework vs. Escalate
 
-- **Rework locally** only for a deterministic failure in the existing `init` or
-  `doctor --listener` code that directly prevents an acceptance criterion. Add
-  one focused regression test and rerun the full suite.
+- **Rework locally** only for the Windows ACL lockdown and its focused tests.
 - **Escalate and stop** for missing credentials, unavailable Windows/VPS,
   network policy, repository permission, dirty/unpushed work, a requested scope
   expansion, or any need to change secrets, SSH keys, services, or old events.
@@ -196,9 +187,9 @@ must not be used even temporarily.
 
 | Risk | Severity | Mitigation |
 |------|----------|------------|
-| Existing shell variables make a broken generated config appear healthy | High | Use a genuinely fresh Git Bash process and source only the generated file |
-| Evidence leaks token or private infrastructure details | High | Report names/presence/results only; never dump environment or file contents |
-| Environment problem is misclassified as a product defect | Medium | Reproduce and attribute before changing code; otherwise escalate |
+| Windows test is skipped instead of enforcing privacy | High | Require `icacls` argv and fail-closed tests |
+| Evidence leaks token or private infrastructure details | High | Executor receives no live token; reviewer reports PASS/FAIL only |
+| ACL command fails after file creation | High | Fail `init`; never print success for an unlocked file |
 | Warmup uses DERP instead of direct connectivity | Low | Accept when warmup and HTTP/auth checks pass; direct path is not required |
 
 ## Required Output Artifacts
@@ -215,10 +206,10 @@ must not be used even temporarily.
 
 ## Planner Self-Check (complete BEFORE handing this card to an executor)
 
-- [x] Goal is one concrete deliverable: real Windows fresh-session acceptance
-      of the already merged `init` / `doctor --listener` path.
-- [x] Scope does not duplicate the merged implementation.
-- [x] Code changes are gated on a deterministic acceptance blocker.
+- [x] Goal is one concrete deliverable: Windows owner-only ACL enforcement plus
+      reviewer-run live acceptance.
+- [x] Scope is limited to the deterministic ACL blocker found by the real run.
+- [x] Executor requires no live credential.
 - [x] Out-of-scope service, credential, Git identity, old-event, and Windows DLL
       issues are explicit.
 - [x] Every acceptance criterion is observable or command-verifiable.
