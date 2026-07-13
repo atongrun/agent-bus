@@ -42,7 +42,7 @@ remove inherited ACEs and grant Full control to the current user only.
 ## Automated test results
 
 ```text
-Ran 14 tests in 0.034s
+Ran 14 tests in 0.037s
 
 OK
 ```
@@ -72,20 +72,16 @@ skipped permission assertions.
 .venv/Scripts/python.exe -m unittest tests.test_listener_config -v
 # → Ran 14 tests ... OK
 
-# Repo-local init with dummy value only
+# Clean tmp before first run
+rm -rf .awf/tmp
+
+# First init (no --force needed because tmp was clean)
 AWF_CODER_TOKEN=dummy-not-a-live-token .venv/Scripts/agent-bus.exe init \
   --agent coder --server-url http://127.0.0.1:8800 \
   --awf-env .awf/fixtures/init-doctor-awf-env.sh --repo-dir . \
   --script-dir scripts --config .awf/tmp/listener-e2e.env
-# → Error: Config already exists (first run had been with --force)
-
-AWF_CODER_TOKEN=dummy-not-a-live-token .venv/Scripts/agent-bus.exe init \
-  --agent coder --server-url http://127.0.0.1:8800 \
-  --awf-env .awf/fixtures/init-doctor-awf-env.sh --repo-dir . \
-  --script-dir scripts --config .awf/tmp/listener-e2e.env \
-  --force
-# → Listener config written: ...listener-e2e.env
-# → Load it with: source '...'
+# → Listener config written: .awf\tmp\listener-e2e.env
+# → Load it with: source '.awf/tmp/listener-e2e.env'
 # → Then run: agent-bus doctor --listener
 
 # Re-run without --force → refuse
@@ -93,7 +89,11 @@ AWF_CODER_TOKEN=dummy-not-a-live-token .venv/Scripts/agent-bus.exe init \
   --agent coder --server-url http://127.0.0.1:8800 \
   --awf-env .awf/fixtures/init-doctor-awf-env.sh --repo-dir . \
   --script-dir scripts --config .awf/tmp/listener-e2e.env
-# → Error: Config already exists (correct)
+# → Error: Config already exists: .awf\tmp\listener-e2e.env. Use --force to replace it.
+# (exit 1 — correct refusal)
+
+# Clean up generated artifacts
+rm -rf .awf/tmp
 ```
 
 ## Deferred issues
