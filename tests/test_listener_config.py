@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from pathlib import PureWindowsPath
-from unittest.mock import call, patch
+from unittest.mock import patch
 
 from click.testing import CliRunner
 
