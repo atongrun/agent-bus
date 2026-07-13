@@ -84,6 +84,18 @@ exporting the values that `init` is responsible for.
 
 ## Constraints
 
+- **Credential-output hard stop**: never run `env`, `printenv`, `set`,
+  `Get-ChildItem Env:`, or any command that lists the process environment. Never
+  `cat`, `type`, `head`, `grep`, or otherwise print either `dispatch.env` or a
+  generated listener env. These commands can disclose live scoped tokens in
+  non-interactive logs and are a task failure even if the value is later
+  redacted from the report.
+- Treat `agent-bus init` and `agent-bus doctor --listener` as opaque commands:
+  inspect only their normal PASS/FAIL output. Do not inspect credential values
+  before or after running them.
+- If variable presence must be checked separately, use a fixed allowlist and
+  print only `NAME=SET` / `NAME=MISSING`; never print values. Token-variable
+  presence is proven by successful auth scope in `doctor`, not by echoing it.
 - Run from a clean worktree. If the runner reports a dirty tree or unpushed
   commits, stop and report; do not reset, clean, or overwrite them.
 - Use a genuinely fresh Git Bash process for acceptance. Do not inherit a shell
@@ -151,8 +163,9 @@ source ~/.config/agent-bus/listener-e2e.env
 .venv/Scripts/agent-bus.exe doctor --listener
 ```
 
-For redacted evidence, report variable names and boolean presence only. Do not
-run commands that print the environment or token values wholesale.
+For redacted evidence, report variable names and boolean presence only. The
+blanket environment/config-printing commands prohibited under **Constraints**
+must not be used even temporarily.
 
 ## Rework vs. Escalate
 
