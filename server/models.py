@@ -1,6 +1,5 @@
 """Pydantic models for request/response validation."""
 
-from datetime import datetime
 from typing import Optional
 
 from pydantic import BaseModel, Field
@@ -8,6 +7,7 @@ from pydantic import BaseModel, Field
 
 class EventCreate(BaseModel):
     """Request body for creating a new event."""
+
     from_agent: str = Field(..., alias="from_agent", min_length=1, max_length=128)
     to_agent: str = Field(..., alias="to_agent", min_length=1, max_length=128)
     type: str = Field(..., min_length=1, max_length=128)
@@ -16,6 +16,7 @@ class EventCreate(BaseModel):
 
 class EventResponse(BaseModel):
     """Full event object returned in responses."""
+
     id: int
     from_agent: str
     to_agent: str
@@ -31,6 +32,7 @@ class EventResponse(BaseModel):
 
 class AckResponse(BaseModel):
     """Response after acknowledging an event."""
+
     id: int
     status: str
     acked_at: str
@@ -38,15 +40,18 @@ class AckResponse(BaseModel):
 
 class EventFail(BaseModel):
     """Request body for failing an event."""
+
     error: Optional[str] = None
 
 
 class BootstrapTokenRequest(BaseModel):
     """Request body for bootstrap token exchange."""
+
     agent: str = Field(..., min_length=1, max_length=128)
 
 
 class HealthResponse(BaseModel):
     """Health check response."""
+
     status: str
     timestamp: str

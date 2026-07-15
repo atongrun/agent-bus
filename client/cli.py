@@ -12,7 +12,14 @@ from pathlib import Path
 
 import click
 import httpx
-from dotenv import load_dotenv
+
+from client.context_config import (
+    ContextError,
+    ContextStore,
+    RuntimeConfig,
+    default_context_root,
+    resolve_runtime_config,
+)
 
 from client.listener_config import (
     default_config_path,
@@ -23,9 +30,6 @@ from client.listener_config import (
     warm_network_path,
     write_listener_env,
 )
-
-# Load .env if present
-load_dotenv()
 
 
 def get_config():
@@ -174,19 +178,180 @@ def run_handler(argv: list[str], timeout: int, workdir: str | None) -> bool:
 @click.group()
 @click.option(
     "--url",
-    envvar="AGENT_BUS_URL",
-    default="http://localhost:8800",
-    help="Agent Bus server URL",
+    default=None,
+    help="Agent Bus server URL (overrides environment and context)",
 )
 @click.option(
-    "--token", envvar="AGENT_BUS_TOKEN", default="", help="Authentication token"
+    "--token",
+    default=None,
+    help="Authentication token (overrides environment and context)",
+)
+@click.option(
+    "--context",
+    "context_name",
+    default=None,
+    help="Use a named context for this command",
 )
 @click.pass_context
-def cli(ctx, url, token):
+def cli(ctx, url, token, context_name):
     """Agent Bus — cross-machine event relay for AI agents."""
     ctx.ensure_object(dict)
-    ctx.obj["url"] = url.rstrip("/")
-    ctx.obj["token"] = token
+    root, notice = default_context_root()
+    ctx.obj["context_store"] = ContextStore(root)
+    if notice:
+        click.echo(f"Warning: {notice}", err=True)
+    ctx.obj["config_inputs"] = {
+        "cli_url": url,
+        "cli_token": token,
+        "context_name": context_name,
+        "root": root,
+    }
+
+
+def _command_config(
+    ctx,
+    *,
+    cli_agent: str | None = None,
+    resolve_credential: bool = True,
+    resolve_agent: bool = True,
+) -> RuntimeConfig:
+    """Resolve configuration after subcommand flags are available."""
+    if "config_inputs" not in ctx.obj:
+        return RuntimeConfig(
+            url=ctx.obj.get("url", "http://localhost:8800"),
+            token=ctx.obj.get("token", ""),
+            agent=cli_agent or ctx.obj.get("agent", ""),
+            context_name=None,
+        )
+    inputs = ctx.obj["config_inputs"]
+    return resolve_runtime_config(
+        cli_url=inputs["cli_url"],
+        cli_token=inputs["cli_token"],
+        cli_agent=cli_agent,
+        context_name=inputs["context_name"],
+        root=inputs["root"],
+        resolve_credential=resolve_credential,
+        resolve_agent=resolve_agent,
+    )
+
+
+def _credential_label(context: dict) -> str:
+    credential = context["credential"]
+    if credential["type"] == "env":
+        return f"env:{credential['name']}"
+    return f"env-file:{credential['path']}#{credential['key']}"
+
+
+@cli.group("context")
+def context_commands():
+    """Manage named client connection contexts."""
+
+
+@context_commands.command("add")
+@click.argument("name")
+@click.option("--server", required=True, help="Agent Bus server URL")
+@click.option("--agent", required=True, help="Agent identity")
+@click.option(
+    "--token-env",
+    required=True,
+    help="Credential environment variable, or key when --env-file is used",
+)
+@click.option(
+    "--env-file",
+    default=None,
+    help="Explicit credential env-file path (never auto-discovered)",
+)
+@click.option("--select", "select_context", is_flag=True, help="Select after adding")
+@click.option("--force", is_flag=True, help="Replace an existing context")
+@click.pass_context
+def context_add(ctx, name, server, agent, token_env, env_file, select_context, force):
+    """Add a token-free named context."""
+    store = ctx.obj["context_store"]
+    try:
+        store.add(
+            name,
+            server=server,
+            agent=agent,
+            token_env=token_env,
+            env_file=env_file,
+            force=force,
+        )
+        if select_context:
+            store.use(name)
+    except (ContextError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Context '{name}' saved without credential values.")
+    if select_context:
+        click.echo(f"Current context: {name}")
+
+
+@context_commands.command("list")
+@click.pass_context
+def context_list(ctx):
+    """List contexts without resolving or printing credentials."""
+    store = ctx.obj["context_store"]
+    try:
+        current = store.current_name()
+        names = store.list_names()
+        for name in names:
+            context = store.get(name)
+            marker = "*" if name == current else " "
+            click.echo(
+                f"{marker} {name}  {context['server']}  agent={context['agent']}  "
+                f"credential={_credential_label(context)}"
+            )
+    except (ContextError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    if not names:
+        click.echo("No contexts configured.")
+
+
+@context_commands.command("show")
+@click.argument("name", required=False)
+@click.pass_context
+def context_show(ctx, name):
+    """Show one context's connection and credential reference."""
+    store = ctx.obj["context_store"]
+    try:
+        selected = name or store.current_name()
+        if selected is None:
+            raise ContextError("no context is selected; pass NAME or run context use")
+        context = store.get(selected)
+        output = {
+            "name": selected,
+            **context,
+            "current": selected == store.current_name(),
+        }
+    except (ContextError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(output, indent=2, ensure_ascii=False))
+
+
+@context_commands.command("use")
+@click.argument("name")
+@click.pass_context
+def context_use(ctx, name):
+    """Select the default context."""
+    try:
+        ctx.obj["context_store"].use(name)
+    except (ContextError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Current context: {name}")
+
+
+@context_commands.command("delete")
+@click.argument("name")
+@click.option(
+    "--force", is_flag=True, help="Also delete the currently selected context"
+)
+@click.pass_context
+def context_delete(ctx, name, force):
+    """Delete a context without touching its credential source."""
+    try:
+        ctx.obj["context_store"].delete(name, force=force)
+    except (ContextError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Context '{name}' deleted.")
 
 
 @cli.command("init")
@@ -261,14 +426,17 @@ def init_listener(
     source_command_path = shell_quote(source_path(config_path.expanduser()))
     click.echo(f"Load it with: source {source_command_path}")
     click.echo("Then run: agent-bus doctor --listener")
+    click.echo(
+        "Compatibility note: listener.env remains supported; use 'agent-bus context add' "
+        "for normal client commands without source/export setup."
+    )
 
 
 @cli.command()
 @click.option(
     "--from",
     "from_agent",
-    envvar="AGENT_BUS_AGENT",
-    required=True,
+    default=None,
     help="Sender agent name",
 )
 @click.option("--to", "to_agent", required=True, help="Recipient agent name")
@@ -288,6 +456,20 @@ def init_listener(
 def send(ctx, from_agent, to_agent, event_type, payload, payload_file, dry_run):
     """Send an event to another agent."""
     payload_obj = _load_payload(payload, payload_file)
+    try:
+        config = _command_config(
+            ctx,
+            cli_agent=from_agent,
+            resolve_credential=not dry_run,
+        )
+    except ContextError as exc:
+        raise click.ClickException(str(exc)) from exc
+    from_agent = config.agent
+    if not from_agent:
+        raise click.ClickException(
+            "sender agent is not configured; pass --from, set AGENT_BUS_AGENT, "
+            "or select a context"
+        )
 
     body = {
         "from_agent": from_agent,
@@ -303,8 +485,8 @@ def send(ctx, from_agent, to_agent, event_type, payload, payload_file, dry_run):
     try:
         with httpx.Client(timeout=10) as client:
             resp = client.post(
-                f"{ctx.obj['url']}/events",
-                headers=get_headers(ctx.obj["token"]),
+                f"{config.url}/events",
+                headers=get_headers(config.token),
                 json=body,
             )
             if resp.status_code == 201:
@@ -315,7 +497,7 @@ def send(ctx, from_agent, to_agent, event_type, payload, payload_file, dry_run):
                 click.echo(f"Error: {resp.status_code} — {resp.text}", err=True)
                 sys.exit(1)
     except httpx.ConnectError:
-        click.echo(f"Error: Cannot connect to {ctx.obj['url']}", err=True)
+        click.echo(f"Error: Cannot connect to {config.url}", err=True)
         sys.exit(1)
 
 
@@ -324,27 +506,38 @@ def send(ctx, from_agent, to_agent, event_type, payload, payload_file, dry_run):
 @click.pass_context
 def ack(ctx, event_id):
     """Manually acknowledge an event by ID."""
-    if not _post_ack(ctx.obj["url"], ctx.obj["token"], event_id):
+    try:
+        config = _command_config(ctx, resolve_agent=False)
+    except ContextError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if not _post_ack(config.url, config.token, event_id):
         sys.exit(1)
 
 
 @cli.command()
-@click.option(
-    "--agent", envvar="AGENT_BUS_AGENT", required=True, help="Agent name to inspect"
-)
+@click.option("--agent", default=None, help="Agent name to inspect")
 @click.option("--count", is_flag=True, help="Print only the number of pending events")
 @click.pass_context
 def pending(ctx, agent, count):
     """List pending/delivered events for an agent."""
     try:
+        config = _command_config(ctx, cli_agent=agent)
+    except ContextError as exc:
+        raise click.ClickException(str(exc)) from exc
+    agent = config.agent
+    if not agent:
+        raise click.ClickException(
+            "agent is not configured; pass --agent, set AGENT_BUS_AGENT, or select a context"
+        )
+    try:
         with httpx.Client(timeout=10) as client:
             resp = client.get(
-                f"{ctx.obj['url']}/events/pending",
+                f"{config.url}/events/pending",
                 params={"agent": agent},
-                headers=get_headers(ctx.obj["token"]),
+                headers=get_headers(config.token),
             )
     except httpx.ConnectError:
-        click.echo(f"Error: Cannot connect to {ctx.obj['url']}", err=True)
+        click.echo(f"Error: Cannot connect to {config.url}", err=True)
         sys.exit(1)
 
     if resp.status_code != 200:
@@ -361,10 +554,8 @@ def pending(ctx, agent, count):
 @cli.command()
 @click.option(
     "--agent",
-    envvar="AGENT_BUS_AGENT",
-    required=False,
-    default="",
-    help="Agent name to diagnose (defaults to AGENT_BUS_AGENT)",
+    default=None,
+    help="Agent name to diagnose (defaults from environment or context)",
 )
 @click.option(
     "--send-test",
@@ -385,8 +576,22 @@ def doctor(ctx, agent, send_test, listener):
     real send->pending->ack round-trip to the agent itself and cleans up the
     test event. Exits 0 iff all checks pass; non-zero otherwise.
     """
-    url = ctx.obj["url"]
-    token = ctx.obj["token"]
+    credential_issue = None
+    try:
+        config = _command_config(ctx, cli_agent=agent)
+    except ContextError as exc:
+        credential_issue = str(exc)
+        try:
+            config = _command_config(
+                ctx,
+                cli_agent=agent,
+                resolve_credential=False,
+            )
+        except ContextError as config_exc:
+            raise click.ClickException(str(config_exc)) from config_exc
+    url = config.url
+    token = config.token
+    agent = config.agent
     total = 3 + int(send_test) + int(listener)
     all_ok = True
 
@@ -398,17 +603,20 @@ def doctor(ctx, agent, send_test, listener):
     report(1, "Config", config_ok)
     if not url:
         click.echo(
-            "  AGENT_BUS_URL is empty. Fix: export AGENT_BUS_URL=http://<host>:8800",
+            "  Server URL is empty. Fix: configure a context or set AGENT_BUS_URL.",
             err=True,
         )
     if not token:
         click.echo(
-            "  AGENT_BUS_TOKEN is not set. Fix: export AGENT_BUS_TOKEN=<your-token>",
+            "  Token is not available. Fix the selected credential reference or set "
+            "AGENT_BUS_TOKEN.",
             err=True,
         )
+        if credential_issue:
+            click.echo(f"  Credential reference error: {credential_issue}", err=True)
     if not agent:
         click.echo(
-            "  AGENT_BUS_AGENT is not set. Fix: export AGENT_BUS_AGENT=<your-agent>",
+            "  Agent is empty. Fix: configure a context or set AGENT_BUS_AGENT.",
             err=True,
         )
     if config_ok:
@@ -586,9 +794,7 @@ def doctor(ctx, agent, send_test, listener):
 
 
 @cli.command()
-@click.option(
-    "--agent", envvar="AGENT_BUS_AGENT", required=True, help="Agent name to listen as"
-)
+@click.option("--agent", default=None, help="Agent name to listen as")
 @click.option(
     "--on",
     "handlers",
@@ -652,6 +858,16 @@ def listen(
     On connect, receives all un-ACKed events, then waits for new ones.
     Press Ctrl+C to stop.
     """
+    try:
+        config = _command_config(ctx, cli_agent=agent)
+    except ContextError as exc:
+        raise click.ClickException(str(exc)) from exc
+    agent = config.agent
+    if not agent:
+        raise click.ClickException(
+            "agent is not configured; pass --agent, set AGENT_BUS_AGENT, or select a context"
+        )
+    token = config.token
     if legacy_ack is not None:
         ack_on_receive = legacy_ack
 
@@ -660,15 +876,15 @@ def listen(
         httpx.Timeout(float(exit_after_idle), connect=30.0) if exit_after_idle else None
     )
     shutdown_requested = False
-    url = f"{ctx.obj['url']}/events/stream?agent={agent}"
+    url = f"{config.url}/events/stream?agent={agent}"
     headers = {
-        **get_headers(ctx.obj["token"]),
+        **get_headers(token),
         "Accept": "text/event-stream",
         "Cache-Control": "no-cache",
     }
 
     click.echo(f"Listening for events as '{agent}'...")
-    click.echo(f"Server: {ctx.obj['url']}")
+    click.echo(f"Server: {config.url}")
     click.echo(f"Handlers: {', '.join(sorted(handler_map)) if handler_map else 'none'}")
     click.echo(f"ACK on receive: {'on' if ack_on_receive else 'off'}")
     click.echo("---")
@@ -701,7 +917,7 @@ def listen(
                 click.echo("")
                 return False
             click.echo("  control:shutdown received — shutting down gracefully.")
-            acked = _post_ack(ctx.obj["url"], ctx.obj["token"], event_id)
+            acked = _post_ack(config.url, token, event_id)
             if acked:
                 completed_ids.add(event_id)
             nonlocal shutdown_requested
@@ -735,8 +951,8 @@ def listen(
                 failure_counts[event_id] = failure_counts.get(event_id, 0) + 1
                 if failure_counts[event_id] >= max_event_attempts:
                     _post_fail(
-                        ctx.obj["url"],
-                        ctx.obj["token"],
+                        config.url,
+                        token,
                         event_id,
                         f"Handler template missing field: {exc}",
                     )
@@ -750,8 +966,8 @@ def listen(
                     failure_counts[event_id] = failure_counts.get(event_id, 0) + 1
                     if failure_counts[event_id] >= max_event_attempts:
                         _post_fail(
-                            ctx.obj["url"],
-                            ctx.obj["token"],
+                            config.url,
+                            token,
                             event_id,
                             f"Handler failed after {max_event_attempts} consecutive attempts",
                         )
@@ -764,7 +980,7 @@ def listen(
         else:
             click.echo("  No handler configured; leaving event unacked")
 
-        if should_ack and _post_ack(ctx.obj["url"], ctx.obj["token"], event_id):
+        if should_ack and _post_ack(config.url, token, event_id):
             completed_ids.add(event_id)
             failure_counts.pop(event_id, None)
             click.echo("")
@@ -840,8 +1056,8 @@ def listen(
                                                 >= max_event_attempts
                                             ):
                                                 _post_fail(
-                                                    ctx.obj["url"],
-                                                    ctx.obj["token"],
+                                                    config.url,
+                                                    token,
                                                     eid,
                                                     f"JSON decode error after {max_event_attempts} consecutive attempts",
                                                 )
