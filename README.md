@@ -1,303 +1,322 @@
 # Agent Bus
 
-**Lightweight durable event relay for local and remote AI agent collaboration.**
+Lightweight durable event relay for agents running on the same machine or
+across a small set of trusted machines.
 
-Agent Bus lets agents on different machines, or multiple agents on the same
-machine, exchange durable task events. It is intentionally small: Python,
-FastAPI, SQLite, SSE, and CLI commands. The design target is second-level
-responsiveness, strong recoverability, and simple deployment on a VPS or
-localhost.
+Agent Bus accepts events over HTTP, persists them in SQLite, and delivers them
+to the recipient over Server-Sent Events (SSE). A receiving process decides
+what to do with each event and acknowledges it after successful handling.
 
-Agent Bus is **runtime-agnostic**: it transports events between agent
-endpoints. Each receiving endpoint decides which local tool to invoke —
-OpenCode, Claude Code, Codex CLI, a shell script, or anything that accepts a
-command-line prompt. Agent Bus does not execute AI tasks, manage Git repos, or
-orchestrate workflows. See [docs/worker.md](docs/worker.md) for how Worker
-Runtimes bridge Agent Bus to local tools.
-
-See [docs/product-positioning.md](docs/product-positioning.md) for the product
-boundary and [docs/roadmap.md](docs/roadmap.md) for the staged roadmap. The
-short version: durable messaging first, Worker Adapter examples second, desktop
-or tray UI later, and no workflow engine in the core relay.
-See [docs/recommended-practices.md](docs/recommended-practices.md) for the
-near-term operating stance: keep the relay lightweight, use private transport
-for exposed deployments, and improve diagnostics before adding heavier
-infrastructure.
-
-## Architecture
-
-```
-┌──────────────────┐                         ┌──────────────────────┐
-│ Any Agent        │                         │ Worker Runtime       │
-│ Sender / Planner │                         │ Receiver / Adapter   │
-│ Human / Script   │                         │                      │
-│                  │   HTTP POST /events     │   SSE /events/stream │  ┌───────────────┐
-│  ┌────────────┐  │ ──────────────────────▶ │ ┌──────────────────┐ │  │ OpenCode      │
-│  │ agent-bus  │  │                         │ │ agent-bus listen │─┼─▶│ Claude Code   │
-│  │ send       │  │       ┌──────────┐      │ │ --on task:new    │ │  │ Codex CLI     │
-│  └────────────┘  │       │          │      │ └──────────────────┘ │  │ shell script  │
-│                  │ ◀──── │Agent Bus │ ──── │                      │  └───────────────┘
-│  ┌────────────┐  │       │ SQLite   │      │ ┌──────────────────┐ │
-│  │ agent-bus  │  │       │          │      │ │ agent-bus send   │ │
-│  │ listen     │◀─┼───────└──────────┘      │ │ (report result)  │ │
-│  └────────────┘  │  SSE /events/stream     │ └──────────────────┘ │
-└──────────────────┘                         └──────────────────────┘
-      events flow in both directions (HTTP POST + SSE)
+```text
+Sender / Planner
+       |
+       | POST event
+       v
+ Agent Bus Server
+  FastAPI + SQLite
+       |
+       | SSE
+       v
+Receiver / Worker Adapter
+       |
+       v
+OpenCode / Claude Code / Codex / Script
 ```
 
-- **Durable queue**: events are persisted before delivery.
-- **At-least-once delivery**: un-ACKed events replay after reconnect.
-- **Handler-success ACK**: listener handlers ACK only after successful command exit.
-- **Agent-scoped tokens**: each agent can send, stream, and ACK only within its own scope.
+Agent Bus is the reliable transport in this diagram. The Worker Runtime or
+adapter prepares workspaces, invokes local tools, runs tests, and reports
+results. That runtime is not part of Agent Bus Core; the files under
+[`examples/`](examples/) are reference implementations, not a production
+workflow system.
 
-### Roles Are Conventions, Not Identities
+## Why Agent Bus
 
-Agent Bus does not hardcode `architect`, `coder`, or `reviewer`. These are
-**role labels** adopted by a particular workflow. Any agent can send events.
-Any agent can receive them. A single agent can be the sender in one exchange
-and the receiver in the next. See [docs/worker.md](docs/worker.md).
+Agent-to-agent handoffs are easy to lose when machines disconnect or a local
+tool fails. Agent Bus provides a small inspectable relay for low-volume
+collaboration between trusted endpoints without introducing a full workflow
+platform or external queue service.
+
+The current stack is Python 3.11+, FastAPI, SQLite, SSE, and a Click CLI. It is
+designed for a few agents and second-level delivery, not high-throughput
+messaging or workflow orchestration.
+
+## Core Guarantees
+
+- Events are persisted before delivery.
+- Delivery is at least once; pending or delivered events replay after
+  reconnect until they are ACKed or moved to the failed state.
+- `agent-bus listen` acknowledges an event only after its matching handler
+  exits successfully.
+- Per-agent tokens scope sending, receiving, inspection, and ACK operations to
+  one agent identity.
+- Event payloads and local handlers remain runtime-agnostic.
+
+At-least-once delivery means a handler may see the same event more than once.
+Make handlers idempotent and use the event ID or a stable `payload.task_id` for
+deduplication.
 
 ## Quick Start
 
-### 1. Install
+This walkthrough verifies Agent Bus Core with an `echo` handler. It does not
+require OpenCode or another AI runtime.
+
+The current server installer creates two agent identities named `architect`
+and `coder`. In this walkthrough, `architect` is the sender and `coder` is the
+receiver. These names are installer defaults, not hardcoded protocol roles.
+
+### 1. Install the Server on Linux
+
+Run this on a fresh systemd-based Linux server whose `python3` is version 3.11
+or newer:
 
 ```bash
 git clone https://github.com/atongrun/agent-bus.git
 cd agent-bus
+python3 --version
 bash scripts/install.sh
-pip install agent-bus
 ```
 
-The installer creates `/etc/agent-bus/.env` with per-agent tokens:
+The installer:
+
+- copies the checkout to `/opt/agent-bus/app`;
+- creates a virtual environment and installs the project into it;
+- creates `/etc/agent-bus/.env` and `/opt/agent-bus/data`;
+- installs and starts `agent-bus.service`;
+- prints newly generated `architect` and `coder` tokens on the first install.
+
+Save each printed token through a trusted channel. The server also stores the
+token mapping in the root-only `/etc/agent-bus/.env`; subsequent installer
+runs do not print existing tokens.
+
+Verify the service on the Linux server:
 
 ```bash
-AGENT_BUS_AGENT_TOKENS=architect=<architect-token>,coder=<coder-token>
-AGENT_BUS_HOST=0.0.0.0
-AGENT_BUS_PORT=8800
-AGENT_BUS_DB_PATH=/opt/agent-bus/data/agent-bus.db
+sudo systemctl status agent-bus
+curl http://127.0.0.1:8800/health
 ```
 
-Keep port `8800` closed on the public internet unless it is protected by HTTPS,
-a tunnel, or another trusted private network boundary. For local testing, use
-`http://localhost:8800` as the server URL.
+The health response must contain `"status":"ok"`.
 
-The recommended first production topology is:
+### 2. Install the CLI on Each Client
 
-```text
-Mac Codex client -> VPS Agent Bus over Tailscale -> Windows Open Code listener
+The package is not currently published on PyPI. On each client with Git and
+Python 3.11+, install it from a source checkout.
+
+On macOS or Linux:
+
+```bash
+git clone https://github.com/atongrun/agent-bus.git
+cd agent-bus
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e .
+agent-bus --help
 ```
 
-For this topology, the VPS Tailscale URL should work. The VPS public IP does not
-need to expose `8800/tcp`.
+On Windows PowerShell:
 
-### 2. Add and Select a Client Context
+```powershell
+git clone https://github.com/atongrun/agent-bus.git
+cd agent-bus
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e .
+agent-bus --help
+```
 
-First obtain the client token by one of these paths:
+The remaining Quick Start commands use POSIX paths. Windows clients support the
+same context and event commands; follow the
+[Windows credential-file instructions](docs/guide/installation.md#obtaining-a-client-token)
+to apply a current-user-only ACL instead of POSIX file modes.
 
-- **Manual provisioning:** the first server install prints the generated
-  per-agent tokens. Transfer only the matching agent token through an existing
-  trusted channel, then place it in an owner-only file outside any repository,
-  for example `AGENT_BUS_CODER_TOKEN=<coder-token>` in
-  `~/.config/agent-bus/coder.credentials.env`.
-- **Bootstrap endpoint:** when the server administrator has explicitly set
-  `AGENT_BUS_BOOTSTRAP_SECRET`, exchange that provisioning secret at
-  `POST /bootstrap/token`. Keep the secret in a mode-`0600` curl config so it
-  does not appear in process arguments, and send the returned token directly
-  to the credentials file instead of printing it:
+### 3. Configure the Sender
+
+Run this on the sender machine. Put only the `architect` token in an owner-only
+file outside any repository:
 
 ```bash
 mkdir -p ~/.config/agent-bus
 chmod 700 ~/.config/agent-bus
-install -m 600 /dev/null ~/.config/agent-bus/bootstrap.curl
+install -m 600 /dev/null ~/.config/agent-bus/architect.credentials.env
 ```
 
-Edit `bootstrap.curl` to contain:
+Edit that file so it contains one line:
 
 ```text
-header = "X-Bootstrap-Secret: <bootstrap-secret>"
+AGENT_BUS_ARCHITECT_TOKEN=<architect-token>
 ```
+
+Create and select the sender context:
 
 ```bash
-set -o pipefail
-umask 077
-credential_file="$HOME/.config/agent-bus/coder.credentials.env"
-temporary_file="$(mktemp "$HOME/.config/agent-bus/.coder.credentials.env.XXXXXX")"
-if curl -fsS -K ~/.config/agent-bus/bootstrap.curl \
-    -H 'Content-Type: application/json' \
-    --data '{"agent":"coder"}' \
-    http://<private-network-host>:8800/bootstrap/token |
-  python3 -c 'import json, sys; print("AGENT_BUS_CODER_TOKEN=" + json.load(sys.stdin)["token"])' \
-    > "$temporary_file"
-then
-  chmod 600 "$temporary_file"
-  mv -f "$temporary_file" "$credential_file"
-else
-  rm -f "$temporary_file"
-  exit 1
-fi
+agent-bus context add architect \
+  --server http://<vps-tailscale-ip>:8800 \
+  --agent architect \
+  --token-env AGENT_BUS_ARCHITECT_TOKEN \
+  --env-file ~/.config/agent-bus/architect.credentials.env \
+  --select
+
+agent-bus doctor
 ```
 
-The bootstrap endpoint returns `404` unless enabled. Treat its secret as a
-high-sensitivity provisioning credential: the current endpoint can exchange it
-for any configured agent token. Use it only over Tailscale, HTTPS, or another
-trusted private transport. See the
-[installation guide](docs/guide/installation.md#obtaining-a-client-token) for
-server setup and security details.
+`doctor` checks that configuration is present, `/health` is reachable, and the
+token can list pending events for `architect`. It does not validate a local AI
+runtime or workspace.
 
-Now create a named connection context once. The context stores only the
-credential file path and key name, never the token value:
+### 4. Configure and Start the Receiver
+
+Run this on the receiver machine using the separately provisioned `coder`
+token:
+
+```bash
+mkdir -p ~/.config/agent-bus
+chmod 700 ~/.config/agent-bus
+install -m 600 /dev/null ~/.config/agent-bus/coder.credentials.env
+```
+
+Edit that file so it contains one line:
+
+```text
+AGENT_BUS_CODER_TOKEN=<coder-token>
+```
+
+Create the receiver context and start a listener:
 
 ```bash
 agent-bus context add coder \
-  --server http://<private-network-host>:8800 \
+  --server http://<vps-tailscale-ip>:8800 \
   --agent coder \
   --token-env AGENT_BUS_CODER_TOKEN \
   --env-file ~/.config/agent-bus/coder.credentials.env \
   --select
+
+agent-bus doctor
+agent-bus listen --on task:new "echo {payload.prompt}"
 ```
 
-Use `--token-env NAME` without `--env-file` when the credential already exists
-in the process environment. Agent Bus never stores the token value in context
-JSON and never prints it from `context list`, `context show`, or `doctor`.
+Leave the listener running while you send the test event.
 
-### 3. Diagnose and Run
+### 5. Send One Test Event
+
+Back on the sender machine, create the payload explicitly:
 
 ```bash
-agent-bus doctor
-agent-bus pending
+cat > payload.json <<'JSON'
+{
+  "task_id": "quickstart-001",
+  "prompt": "Hello from Agent Bus"
+}
+JSON
+
+agent-bus --context architect send \
+  --to coder \
+  --type task:new \
+  --payload-file payload.json
+```
+
+The sender should print `Event sent` with a server-assigned event ID. The
+receiver should print the event, run `echo`, report handler exit code `0`, and
+print `ACKed`.
+
+After the listener has handled the event, stop it with Ctrl+C and verify on the
+receiver machine:
+
+```bash
+agent-bus --context coder pending
+```
+
+The result should be an empty JSON array (`[]`). At this point Agent Bus Core is
+installed and the durable send, receive, handler, and ACK path works. A complete
+AI Worker workflow still requires a local adapter that manages the workspace
+and invokes the chosen tool.
+
+## Production Deployment
+
+For a remote deployment, prefer Tailscale, HTTPS, a tunnel, or another trusted
+private transport. Do not expose bearer-token HTTP on `8800/tcp` directly to
+the public internet. A failed request to the VPS public IP is not a deployment
+failure when the Tailscale URL and the event round trip work.
+
+The optional bootstrap token endpoint is disabled by default. Its secret can
+request any configured agent token, so treat it as a high-sensitivity
+provisioning credential. Firewall setup, bootstrap provisioning, POSIX atomic
+writes, Windows ACLs, and legacy `listener.env` compatibility are documented in
+the [installation and security guide](docs/guide/installation.md).
+
+## Connecting a Local AI Runtime
+
+A local runtime normally performs this sequence:
+
+```text
+receive task:new
+→ prepare workspace
+→ invoke local tool
+→ report result
+```
+
+For example, after OpenCode is installed and configured on the receiver, a
+demonstration listener can invoke it with:
+
+```bash
 agent-bus listen --on task:new "opencode run {payload.prompt}"
 ```
 
-The runtime choice remains entirely local to the receiver. Agent Bus does not
-store handler commands, repository paths, Git behavior, or tool-specific
-settings in a context.
+The handler command is local configuration. Agent Bus does not clone or select
+repositories, construct prompts, run tests, commit changes, push branches, or
+open pull requests. A single `listen --on` command is useful for demonstrations;
+a durable Worker Runtime needs its own workspace policy, idempotency, result
+events, and failure handling. Start with [`docs/worker.md`](docs/worker.md) and
+adapt the reference files under [`examples/`](examples/).
 
-To use a different context for one command without changing the selection:
-
-```bash
-agent-bus --context sender send \
-  --to coder --type task:new --payload-file payload.json
-```
-
-The task is ACKed only when the handler command exits with code `0`. If the
-runtime fails, times out, or the listener disconnects before ACK, the event
-remains un-ACKed and replays on reconnect.
-
-### Advanced, CI, and Compatibility
-
-Runtime configuration precedence is:
-
-```text
-CLI flags > AGENT_BUS_* environment variables > selected context > defaults
-```
-
-CI and other headless environments can continue to use only environment
-variables. Explicit flags remain available for one-off overrides:
+## Common CLI Commands
 
 ```bash
-export AGENT_BUS_URL=http://<agent-bus-host>:8800
-export AGENT_BUS_TOKEN=<token>
-export AGENT_BUS_AGENT=sender
-agent-bus send --to receiver --type task:new --payload-file payload.json
-
-agent-bus --url http://localhost:8800 --token <token> pending --agent receiver
-```
-
-Agent Bus does not auto-discover a repository-local `.env`. A context may read
-one explicitly named env-file credential, but only the configured key.
-
-The existing `agent-bus init` and generated `listener.env` flow remains
-supported for Agent Workflow/OpenCode listener compatibility. Existing users
-can continue to `source ~/.config/agent-bus/listener.env` and run `agent-bus
-doctor --listener`; new normal client setups should prefer contexts. See the
-[installation guide](docs/guide/installation.md#legacy-listenerenv-compatibility).
-
-## Worker Runtime / Adapter
-
-A **Worker Runtime** is the thin shell between Agent Bus and the local tool
-that does the actual work. It is **not part of Agent Bus** — it is an example
-of what an endpoint can build on top of the event relay.
-
-```
-Worker Runtime lifecycle:
-  receive task:new → prepare workspace → invoke local tool → report result
-```
-
-See [`docs/worker.md`](docs/worker.md) for the full design. See
-[`examples/`](examples/) for reference implementations (OpenCode, generic).
-
-| Concern | Agent Bus | Worker Runtime |
-|---------|:---------:|:--------------:|
-| Event transport | ✅ | — |
-| Git operations | — | ✅ |
-| AI execution | — | ✅ |
-| Test running | — | ✅ |
-| Workspace management | — | ✅ |
-| Commit / push / PR | — | ✅ |
-
-## Useful CLI Commands
-
-```bash
+agent-bus doctor
+agent-bus doctor --send-test
 agent-bus send --to coder --type task:new --payload-file payload.json
 agent-bus pending
 agent-bus ack 42
-agent-bus listen --once --on task:new "echo {payload.task_id}"
+agent-bus listen --on task:new "echo {payload.prompt}"
 agent-bus context list
 agent-bus context show
 ```
 
-Handler templates can reference event fields:
+- `doctor` checks configuration, server health, and the current token's agent
+  scope. `--send-test` additionally creates and ACKs a real self-addressed
+  event; the event record remains persisted.
+- `pending` lists events in the pending or delivered state for the selected
+  agent.
+- `ack EVENT_ID` manually acknowledges an event addressed to the selected
+  agent.
+- `context list` and `context show` display connection and credential
+  references, never token values.
 
-- `{id}`, `{type}`, `{from_agent}`, `{to_agent}`
-- `{payload.task_id}`, `{payload.title}`, `{payload.prompt}`, `{payload.url}`
+Run `agent-bus COMMAND --help` for the complete options. Explicit flags and the
+`AGENT_BUS_URL`, `AGENT_BUS_TOKEN`, and `AGENT_BUS_AGENT` environment variables
+remain available for CI and compatibility use.
 
-## Event Protocol
+## Documentation
 
-Recommended event types (conventions, not enforced schema):
-
-| Type | Typical direction | Suggested payload |
-|------|-------------------|-------------------|
-| `task:new` | sender → receiver | `task_id`, `title`, `prompt`, `repo`, `branch`, `url` |
-| `task:accept` | receiver → sender | `task_id`, `message` |
-| `task:failed` | receiver → sender | `task_id`, `exit_code`, `summary` |
-| `pr:ready` | receiver → sender | `task_id`, `pr_url`, `summary` |
-| `review:done` | sender → receiver | `task_id`, `status`, `summary` |
-
-Payloads are free-form JSON. The direction labels (`sender → receiver`) are
-workflow conventions, not protocol constraints. Any agent can send any event
-type.  `pr:ready` is a GitHub coding workflow example; for non-GitHub
-workflows, `task:completed` with `artifact_uri` is a reasonable alternative.
-
-## API Endpoints
-
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| POST | `/events` | Agent token | Create an event |
-| GET | `/events/pending?agent=` | Agent token | List un-ACKed events |
-| GET | `/events/stream?agent=` | Agent token | SSE stream |
-| POST | `/events/{id}/ack` | Agent token | ACK an event |
-| GET | `/health` | None | Health check |
-
-All authenticated endpoints use `Authorization: Bearer <AGENT_BUS_TOKEN>`.
-Bearer tokens are sent with each request. Use Tailscale, HTTPS, or another
-trusted private transport for any non-local deployment.
-
-## What Agent Bus Does NOT Provide
-
-- Git operations (clone, checkout, commit, push)
-- AI model invocation or prompt construction
-- Workflow DAG or orchestration
-- Agent selection or routing strategy
-- Workflow memory or prompt-context management
-- Dashboard or Web UI
-- Any tool-specific logic (OpenCode, Claude Code, Codex CLI, Hermes, etc.)
-
-These belong in your Worker Runtime, not in the relay.
+| Document | Use it for |
+| --- | --- |
+| [Installation and security](docs/guide/installation.md) | Server networking, token provisioning, bootstrap, Windows ACLs, and compatibility setup |
+| [Worker Runtime](docs/worker.md) | Designing the adapter that invokes local tools and reports results |
+| [Product positioning](docs/product-positioning.md) | Understanding the boundary between the relay, adapters, and workflow systems |
+| [Recommended practices](docs/recommended-practices.md) | Operating the current lightweight deployment and deciding when to add infrastructure |
+| [Protocol](docs/protocol.md) | Event fields, delivery semantics, event conventions, and API endpoints |
+| [Roadmap](docs/roadmap.md) | Current limitations and staged future work |
+| [Design](docs/design.md) | Architecture, SQLite/SSE choices, and the security model |
 
 ## Development
 
+Agent Bus requires Python 3.11+. The repository test script requires
+[`uv`](https://docs.astral.sh/uv/), and the lint command requires Ruff.
+
 ```bash
+ruff check client server tests
+python -m compileall -q client server tests
 bash scripts/test.sh
 ```
 
-The test script requires Python 3.11+ and `uv`.
+`scripts/test.sh` runs the unit suite, starts a local server, and exercises the
+event API and CLI integration path.
