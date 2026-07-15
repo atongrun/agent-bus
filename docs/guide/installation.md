@@ -93,11 +93,120 @@ Complete one event loop before declaring the deployment ready:
 
 ## Native Client Contexts
 
-Install the CLI, then create a named context. Contexts contain only a server
-URL, an agent identity, and a credential reference:
+Install the CLI, obtain the matching agent token, then create a named context.
+Contexts contain only a server URL, an agent identity, and a credential
+reference.
 
-First create an owner-only credential file outside any repository, for example
-`~/.config/agent-bus/credentials.env`, containing
+### Obtaining a Client Token
+
+The server installer generates per-agent tokens. There are two supported
+provisioning paths:
+
+1. Copy the matching token shown during the first install through an existing
+   trusted channel into an owner-only credentials file.
+2. Optionally enable `POST /bootstrap/token` and exchange a separately
+   provisioned bootstrap secret for one agent token.
+
+The bootstrap endpoint is disabled by default. To enable it, add a strong
+random value to the server's protected `/etc/agent-bus/.env` and restart the
+service:
+
+```text
+AGENT_BUS_BOOTSTRAP_SECRET=<random-bootstrap-secret>
+```
+
+```bash
+sudo chmod 600 /etc/agent-bus/.env
+sudo systemctl restart agent-bus
+```
+
+Provision that bootstrap secret to the client through an existing secure
+channel. Do not pass it with curl `-H` or `--header`, because command-line
+arguments can be visible to other local processes. On POSIX, keep the header in
+a private curl config instead:
+
+```bash
+mkdir -p ~/.config/agent-bus
+chmod 700 ~/.config/agent-bus
+install -m 600 /dev/null ~/.config/agent-bus/bootstrap.curl
+```
+
+Edit `bootstrap.curl` to contain exactly one header line:
+
+```text
+header = "X-Bootstrap-Secret: <bootstrap-secret>"
+```
+
+Exchange it for the selected agent token without writing either secret to the
+terminal. Write to a private temporary file and replace the destination only
+after curl and JSON parsing both succeed, so a failed exchange cannot erase a
+working credential:
+
+```bash
+set -o pipefail
+umask 077
+credential_file="$HOME/.config/agent-bus/sender.credentials.env"
+temporary_file="$(mktemp "$HOME/.config/agent-bus/.sender.credentials.env.XXXXXX")"
+if curl -fsS -K ~/.config/agent-bus/bootstrap.curl \
+    -H 'Content-Type: application/json' \
+    --data '{"agent":"sender"}' \
+    http://<vps-tailscale-ip>:8800/bootstrap/token |
+  python3 -c 'import json, sys; print("AGENT_BUS_SENDER_TOKEN=" + json.load(sys.stdin)["token"])' \
+    > "$temporary_file"
+then
+  chmod 600 "$temporary_file"
+  mv -f "$temporary_file" "$credential_file"
+else
+  rm -f "$temporary_file"
+  exit 1
+fi
+```
+
+On Windows PowerShell, protect the configuration directory with a
+current-user-only NTFS ACL before creating either file. Store the bootstrap
+secret as the only line in `bootstrap.secret`; reading it into a PowerShell
+variable keeps it out of process arguments:
+
+```powershell
+$root = Join-Path $env:APPDATA "agent-bus"
+New-Item -ItemType Directory -Force -Path $root | Out-Null
+icacls $root /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Failed to protect Agent Bus config directory" }
+$bootstrapPath = Join-Path $root "bootstrap.secret"
+New-Item -ItemType File -Force -Path $bootstrapPath | Out-Null
+notepad $bootstrapPath
+
+$secret = (Get-Content -Raw $bootstrapPath).Trim()
+$response = Invoke-RestMethod -Method Post `
+  -Uri "http://<vps-tailscale-ip>:8800/bootstrap/token" `
+  -Headers @{"X-Bootstrap-Secret" = $secret} `
+  -ContentType "application/json" `
+  -Body '{"agent":"receiver"}'
+$temporaryFile = Join-Path $root ".receiver.credentials.env.tmp"
+$credentialFile = Join-Path $root "receiver.credentials.env"
+Set-Content -Path $temporaryFile `
+  -Value "AGENT_BUS_RECEIVER_TOKEN=$($response.token)" -Encoding ascii
+icacls $temporaryFile /inheritance:r /grant:r "$($env:USERNAME):F" | Out-Null
+if ($LASTEXITCODE -ne 0) {
+  Remove-Item -Force $temporaryFile
+  throw "Failed to protect Agent Bus credential file"
+}
+Move-Item -Force $temporaryFile $credentialFile
+```
+
+Expected failures deliberately reveal little: disabled endpoint or unknown
+agent returns `404`; a missing or incorrect bootstrap secret returns `401`.
+The current bootstrap secret is not role-scoped—it can request any configured
+agent token—so protect it like a high-sensitivity provisioning credential and
+use the endpoint only over Tailscale, HTTPS, or another trusted private
+transport. Leaving it unset is recommended when tokens are provisioned by
+another secure mechanism.
+
+### Creating the Context
+
+Whether provisioned manually or through the bootstrap endpoint, keep the token
+in an owner-only credential file outside any repository, for example
+`~/.config/agent-bus/sender.credentials.env`, containing
 `AGENT_BUS_SENDER_TOKEN=<agent-specific-token>`. Use mode `0600` on POSIX or a
 current-user-only ACL on Windows. Then reference it without copying the value:
 
@@ -108,7 +217,7 @@ agent-bus context add sender \
   --server http://<vps-tailscale-ip>:8800 \
   --agent sender \
   --token-env AGENT_BUS_SENDER_TOKEN \
-  --env-file ~/.config/agent-bus/credentials.env \
+  --env-file ~/.config/agent-bus/sender.credentials.env \
   --select
 
 agent-bus doctor
@@ -122,7 +231,7 @@ agent-bus context add receiver \
   --server http://<vps-tailscale-ip>:8800 \
   --agent receiver \
   --token-env AGENT_BUS_RECEIVER_TOKEN \
-  --env-file ~/.config/agent-bus/credentials.env \
+  --env-file ~/.config/agent-bus/receiver.credentials.env \
   --select
 
 agent-bus doctor
