@@ -55,9 +55,15 @@ class CliConfigRegressionTests(unittest.TestCase):
             )
 
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("url=http://flag-host:8800 agent=flag-agent token=set", result.output)
-        self.assertEqual(client.get.call_args_list[0].args[0], "http://flag-host:8800/health")
-        self.assertEqual(client.get.call_args_list[1].kwargs["params"], {"agent": "flag-agent"})
+        self.assertIn(
+            "url=http://flag-host:8800 agent=flag-agent token=set", result.output
+        )
+        self.assertEqual(
+            client.get.call_args_list[0].args[0], "http://flag-host:8800/health"
+        )
+        self.assertEqual(
+            client.get.call_args_list[1].kwargs["params"], {"agent": "flag-agent"}
+        )
         self.assertEqual(
             client.get.call_args_list[1].kwargs["headers"]["Authorization"],
             "Bearer flag-token",

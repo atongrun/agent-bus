@@ -24,16 +24,6 @@ near-term operating stance: keep the relay lightweight, use private transport
 for exposed deployments, and improve diagnostics before adding heavier
 infrastructure.
 
-See [docs/recommended-practices.md](docs/recommended-practices.md) for the
-near-term operating stance: keep the relay lightweight, borrow mature queue
-reliability habits, and improve client diagnostics before adding heavier
-infrastructure.
-
-See [docs/recommended-practices.md](docs/recommended-practices.md) for the
-near-term operating stance: keep the relay lightweight, borrow mature queue
-reliability habits, and improve client diagnostics before adding heavier
-infrastructure.
-
 ## Architecture
 
 ```
@@ -69,12 +59,13 @@ and the receiver in the next. See [docs/worker.md](docs/worker.md).
 
 ## Quick Start
 
-### 1. Server on a VPS or Localhost
+### 1. Install
 
 ```bash
 git clone https://github.com/atongrun/agent-bus.git
 cd agent-bus
 bash scripts/install.sh
+pip install agent-bus
 ```
 
 The installer creates `/etc/agent-bus/.env` with per-agent tokens:
@@ -86,15 +77,9 @@ AGENT_BUS_PORT=8800
 AGENT_BUS_DB_PATH=/opt/agent-bus/data/agent-bus.db
 ```
 
-For a VPS, prefer private-network access such as Tailscale:
-
-```bash
-export AGENT_BUS_URL=http://<vps-tailscale-ip>:8800
-```
-
 Keep port `8800` closed on the public internet unless it is protected by HTTPS,
 a tunnel, or another trusted private network boundary. For local testing, use
-`AGENT_BUS_URL=http://localhost:8800`.
+`http://localhost:8800` as the server URL.
 
 The recommended first production topology is:
 
@@ -105,86 +90,78 @@ Mac Codex client -> VPS Agent Bus over Tailscale -> Windows Open Code listener
 For this topology, the VPS Tailscale URL should work. The VPS public IP does not
 need to expose `8800/tcp`.
 
-### 2. Sender Side (Planner / Architect)
+### 2. Add and Select a Client Context
 
-Any agent that wants to dispatch a task. The sender does not need to know
-which tool the receiver will use.
-
-```bash
-export AGENT_BUS_URL=http://<agent-bus-host>:8800
-export AGENT_BUS_TOKEN=<architect-token>
-export AGENT_BUS_AGENT=architect
-
-agent-bus send --to coder --type task:new --payload '{
-  "task_id": "task-001",
-  "title": "Implement the issue",
-  "prompt": "Read the linked issue, implement it, test it, and open a PR.",
-  "url": "https://github.com/example/repo/issues/1"
-}'
-
-agent-bus listen --agent architect --on pr:ready "echo PR ready: {payload.pr_url}"
-```
-
-### 3. Receiver Side (Worker / Executor)
-
-The receiver runs `agent-bus listen` with a `--on` handler that invokes its
-local runtime. **The runtime choice is entirely up to the receiver.** Agent Bus
-has no opinion about which tool you use.
-
-For an Agent Workflow listener, generate the repeatable local environment once
-instead of rebuilding it in every shell session:
+Create a named connection context once. This example reads the credential from
+one explicit env-file; the context stores only the file path and key name.
+Before running it, create that owner-only file outside any repository with one
+entry such as `AGENT_BUS_CODER_TOKEN=<agent-specific-token>` (mode `0600` on
+POSIX; current-user-only ACL on Windows).
 
 ```bash
-agent-bus init \
+agent-bus context add coder \
+  --server http://<private-network-host>:8800 \
   --agent coder \
-  --server-url http://<private-network-host>:8800 \
-  --awf-env ~/.config/awf/dispatch.env \
-  --repo-dir <agent-bus-checkout> \
-  --script-dir <agent-workflow-checkout>/scripts
-
-source ~/.config/agent-bus/listener.env
-agent-bus doctor --listener
+  --token-env AGENT_BUS_CODER_TOKEN \
+  --env-file ~/.config/agent-bus/credentials.env \
+  --select
 ```
 
-`init` writes a mode-`0600` file, references the matching `AWF_<ROLE>_TOKEN`
-instead of copying or printing its value, adds the private-network host to
-`NO_PROXY`, and records the AWF paths and OpenCode background-subagent flag.
-It refuses to replace an existing file unless `--force` is given. `doctor
---listener` checks that this listener-specific environment is complete, warms
-the configured private-network path, and then runs the normal server and
-authentication diagnostics.
+Use `--token-env NAME` without `--env-file` when the credential already exists
+in the process environment. Agent Bus never stores the token value in context
+JSON and never prints it from `context list`, `context show`, or `doctor`.
 
-By default, `init` bridges `--agent coder` from `AWF_CODER_TOKEN`. If an
-existing AWF role uses a different variable name, select it explicitly without
-copying the secret value, for example `--token-env AWF_ARCH_TOKEN`.
+### 3. Diagnose and Run
 
 ```bash
-export AGENT_BUS_URL=http://<agent-bus-host>:8800
-export AGENT_BUS_TOKEN=<coder-token>
-export AGENT_BUS_AGENT=coder
+agent-bus doctor
+agent-bus pending
+agent-bus listen --on task:new "opencode run {payload.prompt}"
+```
 
-# OpenCode — one possible runtime
-agent-bus listen --agent coder --on task:new "opencode run {payload.prompt}"
+The runtime choice remains entirely local to the receiver. Agent Bus does not
+store handler commands, repository paths, Git behavior, or tool-specific
+settings in a context.
 
-# Claude Code — another possible runtime
-agent-bus listen --agent coder --on task:new "claude --print '{payload.prompt}'"
+To use a different context for one command without changing the selection:
 
-# Codex CLI — yet another
-agent-bus listen --agent coder --on task:new "codex exec '{payload.prompt}'"
+```bash
+agent-bus --context sender send \
+  --to coder --type task:new --payload-file payload.json
 ```
 
 The task is ACKed only when the handler command exits with code `0`. If the
 runtime fails, times out, or the listener disconnects before ACK, the event
 remains un-ACKed and replays on reconnect.
 
-### 4. Same-Machine Agents
+### Advanced, CI, and Compatibility
 
-The same protocol works locally:
+Runtime configuration precedence is:
+
+```text
+CLI flags > AGENT_BUS_* environment variables > selected context > defaults
+```
+
+CI and other headless environments can continue to use only environment
+variables. Explicit flags remain available for one-off overrides:
 
 ```bash
-export AGENT_BUS_URL=http://localhost:8800
-agent-bus listen --agent verifier --on task:new "python verify.py {payload.task_id}"
+export AGENT_BUS_URL=http://<agent-bus-host>:8800
+export AGENT_BUS_TOKEN=<token>
+export AGENT_BUS_AGENT=sender
+agent-bus send --to receiver --type task:new --payload-file payload.json
+
+agent-bus --url http://localhost:8800 --token <token> pending --agent receiver
 ```
+
+Agent Bus does not auto-discover a repository-local `.env`. A context may read
+one explicitly named env-file credential, but only the configured key.
+
+The existing `agent-bus init` and generated `listener.env` flow remains
+supported for Agent Workflow/OpenCode listener compatibility. Existing users
+can continue to `source ~/.config/agent-bus/listener.env` and run `agent-bus
+doctor --listener`; new normal client setups should prefer contexts. See the
+[installation guide](docs/guide/installation.md#legacy-listenerenv-compatibility).
 
 ## Worker Runtime / Adapter
 
@@ -213,9 +190,11 @@ See [`docs/worker.md`](docs/worker.md) for the full design. See
 
 ```bash
 agent-bus send --to coder --type task:new --payload-file payload.json
-agent-bus pending --agent coder
+agent-bus pending
 agent-bus ack 42
-agent-bus listen --agent coder --once --on task:new "echo {payload.task_id}"
+agent-bus listen --once --on task:new "echo {payload.task_id}"
+agent-bus context list
+agent-bus context show
 ```
 
 Handler templates can reference event fields:
@@ -260,7 +239,7 @@ trusted private transport for any non-local deployment.
 - AI model invocation or prompt construction
 - Workflow DAG or orchestration
 - Agent selection or routing strategy
-- Memory or context management
+- Workflow memory or prompt-context management
 - Dashboard or Web UI
 - Any tool-specific logic (OpenCode, Claude Code, Codex CLI, Hermes, etc.)
 

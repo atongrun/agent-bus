@@ -6,9 +6,6 @@ foreground CLI listeners or external adapters on each agent machine.
 For the rationale behind this lightweight path, see
 [../recommended-practices.md](../recommended-practices.md).
 
-For the rationale behind this lightweight path, see
-[../recommended-practices.md](../recommended-practices.md).
-
 ## Server
 
 On a Linux VPS or local Linux machine:
@@ -75,11 +72,7 @@ From a non-tailnet path, `http://<vps-public-ip>:8800/health` should fail. Do
 not treat public-IP `8800/tcp` failure as a deployment failure when the
 Tailscale URL works.
 
-Use the Tailscale URL on clients:
-
-```bash
-export AGENT_BUS_URL=http://<vps-tailscale-ip>:8800
-```
+Use the Tailscale URL as the `--server` value when creating client contexts.
 
 One concrete production path can look like this:
 
@@ -98,40 +91,89 @@ Complete one event loop before declaring the deployment ready:
 3. ACK the event with the recipient agent token.
 4. Query `pending` again and confirm it is empty.
 
-## Sender Client
+## Native Client Contexts
 
-Any agent or script can send events. The sender does not need to know which
-runtime the receiver will invoke.
+Install the CLI, then create a named context. Contexts contain only a server
+URL, an agent identity, and a credential reference:
+
+First create an owner-only credential file outside any repository, for example
+`~/.config/agent-bus/credentials.env`, containing
+`AGENT_BUS_SENDER_TOKEN=<agent-specific-token>`. Use mode `0600` on POSIX or a
+current-user-only ACL on Windows. Then reference it without copying the value:
 
 ```bash
 pip install agent-bus
 
+agent-bus context add sender \
+  --server http://<vps-tailscale-ip>:8800 \
+  --agent sender \
+  --token-env AGENT_BUS_SENDER_TOKEN \
+  --env-file ~/.config/agent-bus/credentials.env \
+  --select
+
+agent-bus doctor
+agent-bus send --to receiver --type task:new --payload-file payload.json
+```
+
+For a receiver, add a separate identity and select it on that machine:
+
+```bash
+agent-bus context add receiver \
+  --server http://<vps-tailscale-ip>:8800 \
+  --agent receiver \
+  --token-env AGENT_BUS_RECEIVER_TOKEN \
+  --env-file ~/.config/agent-bus/credentials.env \
+  --select
+
+agent-bus doctor
+agent-bus listen --on task:new "opencode run --prompt {payload.prompt}"
+```
+
+The handler is a local runtime choice, not context data. Git, AI execution,
+workspace setup, and PR creation belong to the adapter outside Agent Bus core.
+The event is ACKed only if the handler exits with code `0`.
+
+Contexts are stored as program-generated JSON under:
+
+- POSIX: `$XDG_CONFIG_HOME/agent-bus`, otherwise `~/.config/agent-bus`
+- Windows: `%APPDATA%\agent-bus`; if `APPDATA` is unavailable, Agent Bus warns
+  and uses `%USERPROFILE%\AppData\Roaming\agent-bus`
+
+The selected name is stored in `current-context`; named files live under
+`contexts/<validated-name>.json`. Both are written atomically and made private.
+Names cannot contain path separators or traversal components.
+
+Credential references support:
+
+- `--token-env NAME`: read `NAME` from the process environment.
+- `--token-env KEY --env-file PATH`: read only `KEY` from the explicit file.
+
+`PATH` must be absolute or start with `~`, so the credential source cannot
+silently change when a command runs from a different working directory.
+
+Token values are never written to context JSON and are never printed by
+`context list`, `context show`, or `doctor`. Repository-local `.env` files are
+not auto-discovered.
+
+Runtime precedence is `CLI flags > AGENT_BUS_* environment variables > selected
+context > defaults`. This preserves existing scripts and lets CI remain
+context-free:
+
+```bash
 export AGENT_BUS_URL=http://<vps-tailscale-ip>:8800
 export AGENT_BUS_TOKEN=<sender-token>
 export AGENT_BUS_AGENT=sender
-
 agent-bus send --to receiver --type task:new --payload-file payload.json
-agent-bus listen --agent sender --on task:completed "echo completed: {payload.artifact_uri}"
 ```
+
+Use `agent-bus context list`, `show`, `use`, and `delete` to manage contexts.
+Use `agent-bus --context NAME pending` for a one-command selection override.
 
 ## Receiver Adapter
 
 The receiver listens for events and invokes a local runtime. Agent Bus only
 delivers the event and tracks ACK state; Git, AI execution, workspace setup,
 and PR creation belong to the adapter.
-
-```bash
-pip install agent-bus
-
-export AGENT_BUS_URL=http://<vps-tailscale-ip>:8800
-export AGENT_BUS_TOKEN=<receiver-token>
-export AGENT_BUS_AGENT=receiver
-
-# OpenCode is one possible runtime, not a required dependency.
-agent-bus listen --agent receiver --on task:new "opencode run --prompt '{payload.prompt}'"
-```
-
-The event is ACKed only if the handler command exits with code `0`.
 
 ### Optional Windows Polling Adapter
 
@@ -198,14 +240,26 @@ polling with `Workdir does not exist` / `Workdir is not a directory`.
 
 ## Local Multi-Agent Mode
 
-For local agents, point all clients at localhost:
+For local agents, use a localhost context:
 
 ```bash
-export AGENT_BUS_URL=http://localhost:8800
-export AGENT_BUS_AGENT=verifier
-export AGENT_BUS_TOKEN=<verifier-token>
-agent-bus listen --agent verifier --on task:new "python verify.py {payload.task_id}"
+agent-bus context add verifier \
+  --server http://localhost:8800 \
+  --agent verifier \
+  --token-env AGENT_BUS_VERIFIER_TOKEN \
+  --select
+agent-bus listen --on task:new "python verify.py {payload.task_id}"
 ```
+
+## Legacy listener.env Compatibility
+
+Existing Agent Workflow/OpenCode listeners may continue to use `agent-bus init`
+and source the generated `listener.env` before `agent-bus doctor --listener`.
+That compatibility entry point still records workflow-specific repo/script
+paths and network warm-up settings in the legacy shell environment; those
+fields are intentionally not accepted in native contexts. Migrate normal CLI
+connection settings to `agent-bus context add` when convenient; no immediate
+cutover is required.
 
 ## Troubleshooting
 
