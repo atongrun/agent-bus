@@ -92,18 +92,67 @@ need to expose `8800/tcp`.
 
 ### 2. Add and Select a Client Context
 
-Create a named connection context once. This example reads the credential from
-one explicit env-file; the context stores only the file path and key name.
-Before running it, create that owner-only file outside any repository with one
-entry such as `AGENT_BUS_CODER_TOKEN=<agent-specific-token>` (mode `0600` on
-POSIX; current-user-only ACL on Windows).
+First obtain the client token by one of these paths:
+
+- **Manual provisioning:** the first server install prints the generated
+  per-agent tokens. Transfer only the matching agent token through an existing
+  trusted channel, then place it in an owner-only file outside any repository,
+  for example `AGENT_BUS_CODER_TOKEN=<coder-token>` in
+  `~/.config/agent-bus/coder.credentials.env`.
+- **Bootstrap endpoint:** when the server administrator has explicitly set
+  `AGENT_BUS_BOOTSTRAP_SECRET`, exchange that provisioning secret at
+  `POST /bootstrap/token`. Keep the secret in a mode-`0600` curl config so it
+  does not appear in process arguments, and send the returned token directly
+  to the credentials file instead of printing it:
+
+```bash
+mkdir -p ~/.config/agent-bus
+chmod 700 ~/.config/agent-bus
+install -m 600 /dev/null ~/.config/agent-bus/bootstrap.curl
+```
+
+Edit `bootstrap.curl` to contain:
+
+```text
+header = "X-Bootstrap-Secret: <bootstrap-secret>"
+```
+
+```bash
+set -o pipefail
+umask 077
+credential_file="$HOME/.config/agent-bus/coder.credentials.env"
+temporary_file="$(mktemp "$HOME/.config/agent-bus/.coder.credentials.env.XXXXXX")"
+if curl -fsS -K ~/.config/agent-bus/bootstrap.curl \
+    -H 'Content-Type: application/json' \
+    --data '{"agent":"coder"}' \
+    http://<private-network-host>:8800/bootstrap/token |
+  python3 -c 'import json, sys; print("AGENT_BUS_CODER_TOKEN=" + json.load(sys.stdin)["token"])' \
+    > "$temporary_file"
+then
+  chmod 600 "$temporary_file"
+  mv -f "$temporary_file" "$credential_file"
+else
+  rm -f "$temporary_file"
+  exit 1
+fi
+```
+
+The bootstrap endpoint returns `404` unless enabled. Treat its secret as a
+high-sensitivity provisioning credential: the current endpoint can exchange it
+for any configured agent token. Use it only over Tailscale, HTTPS, or another
+trusted private transport. See the
+[installation guide](docs/guide/installation.md#obtaining-a-client-token) for
+server setup and security details.
+
+Now create a named connection context once. The context stores only the
+credential file path and key name, never the token value:
 
 ```bash
 agent-bus context add coder \
   --server http://<private-network-host>:8800 \
   --agent coder \
   --token-env AGENT_BUS_CODER_TOKEN \
-  --env-file ~/.config/agent-bus/credentials.env \
+  --env-file ~/.config/agent-bus/coder.credentials.env \
   --select
 ```
 
