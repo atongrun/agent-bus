@@ -28,10 +28,10 @@ Expected work:
 
 - Keep the FastAPI + SQLite + SSE core simple and single-node.
 - Preserve handler-success ACK semantics.
-- Improve pending / un-ACKed inspection.
-- Add replay and requeue ergonomics where they clarify recovery.
-- Add idempotency guidance around event `id`, `task_id`, and future
-  `idempotency_key`.
+- Maintain pending, failed, and un-ACKed inspection.
+- Maintain explicit failed-event requeue and cumulative attempt/error evidence.
+- Keep idempotency guidance centered on event `id` and application-owned
+  `payload.task_id`.
 - Improve CLI diagnostics for URL, token, auth scope, health, send, pending,
   ACK, and listener behavior.
 - Keep payloads flexible while documenting a recommended task envelope.
@@ -40,7 +40,9 @@ Acceptance criteria:
 
 - A new agent endpoint can prove `send -> pending -> handler success -> ACK ->
   pending empty`.
-- A failed handler leaves work inspectable and replayable.
+- Repeated failed handlers accumulate attempts across listener processes, become
+  terminal at the configured threshold, and remain explicitly inspectable and
+  requeueable by the recipient.
 - A disconnected listener can reconnect without losing assigned work.
 - Operators can distinguish service failure, network failure, token failure,
   and local handler failure.
@@ -124,7 +126,7 @@ This should remain an operator surface for the relay and local adapters. It
 should not become the place where workflows, prompts, model routing, memory, or
 Git policy are designed.
 
-## v1.x: Status, Retry, Logs, Notifications
+## v1.x: Richer Status, Logs, Notifications
 
 Focus: improve operational visibility after the relay and UI shell are stable.
 
@@ -132,8 +134,9 @@ Possible work:
 
 - Worker heartbeat / presence.
 - Task status conventions beyond raw event types.
-- Attempt count, last error, and retry hints.
-- Dead-letter or held state for repeatedly failing work.
+- Retry hints and richer failure summaries beyond the current durable attempt
+  count, last error, terminal failed state, and explicit requeue.
+- Optional dead-letter routing beyond the current recipient-held failed state.
 - Structured adapter logs.
 - Human notifications through local desktop, CLI, webhook, Telegram, or other
   optional clients.

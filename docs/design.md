@@ -50,7 +50,11 @@ Agent Bus uses at-least-once delivery:
 - events are persisted before delivery,
 - pending and delivered events replay after reconnect,
 - listeners ACK only after successful processing,
-- handlers that fail or time out leave events un-ACKed.
+- each handler failure is recorded atomically by the server,
+- events stay replayable until the configured attempt threshold moves them to
+  terminal `failed`,
+- terminal failures are excluded from delivery until the recipient explicitly
+  requeues them.
 
 This means handlers must be idempotent or tolerate duplicate execution. The
 event `id` and recommended `payload.task_id` are available for deduplication.
@@ -100,7 +104,27 @@ In this mode:
 - a token maps to one agent,
 - `from_agent` must match the caller token,
 - streams are limited to the caller agent,
-- ACK is limited to events addressed to the caller agent.
+- ACK, failure recording, failed inspection, and requeue are limited to events
+  addressed to the caller agent.
+
+## Failure Recovery
+
+The listener reports every unsuccessful handler attempt to the server with the
+event's observed `retry_count`. SQLite records the failure, increments the count,
+updates `last_error`, and applies the terminal threshold in one transaction. The
+observed count is an optimistic precondition: duplicate reports for the same
+delivery return current state without double-counting, and a stale listener ACK
+cannot overwrite a newer failure.
+
+Before the threshold, the event returns to `pending`. At the threshold it moves
+to `failed` and disappears from pending inspection and SSE delivery. The
+recipient can inspect it with `agent-bus failed` and explicitly run
+`agent-bus requeue EVENT_ID`. Requeue preserves `retry_count` and `last_error` as
+cumulative evidence; a successful redelivery can then be ACKed normally.
+
+This lifecycle does not claim or lease work and does not coordinate competing
+consumers. Agent Bus remains a small at-least-once relay for one logical
+recipient process per agent identity.
 
 The legacy `AGENT_BUS_TOKEN` shared-token mode remains available for local
 development and migration, but it should not be used for exposed deployments.

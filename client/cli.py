@@ -64,13 +64,23 @@ def _load_payload(payload: str, payload_file: str | None) -> dict:
     return loaded
 
 
-def _post_ack(base_url: str, token: str, event_id: int) -> bool:
+def _post_ack(
+    base_url: str,
+    token: str,
+    event_id: int,
+    expected_retry_count: int | None = None,
+) -> bool:
     """ACK an event and print a short diagnostic."""
     try:
         with httpx.Client(timeout=10) as client:
             resp = client.post(
                 f"{base_url}/events/{event_id}/ack",
                 headers=get_headers(token),
+                params=(
+                    {"expected_retry_count": expected_retry_count}
+                    if expected_retry_count is not None
+                    else None
+                ),
             )
     except Exception as exc:
         click.echo(f"  ACK error: {exc}", err=True)
@@ -84,29 +94,45 @@ def _post_ack(base_url: str, token: str, event_id: int) -> bool:
     return False
 
 
-def _post_fail(base_url: str, token: str, event_id: int, error: str) -> bool:
-    """FAIL an event (server persists it) and print a short diagnostic.
+def _post_fail(
+    base_url: str,
+    token: str,
+    event_id: int,
+    error: str,
+    *,
+    expected_retry_count: int,
+    max_attempts: int,
+) -> dict | None:
+    """Persist one failed attempt and return the server-authoritative state.
 
     Never raises out of the listen loop: on network error it prints and
-    returns False, mirroring _post_ack.
+    returns None, mirroring _post_ack.
     """
     try:
         with httpx.Client(timeout=10) as client:
             resp = client.post(
                 f"{base_url}/events/{event_id}/fail",
                 headers=get_headers(token),
-                json={"error": error},
+                json={
+                    "error": error,
+                    "expected_retry_count": expected_retry_count,
+                    "max_attempts": max_attempts,
+                },
             )
     except Exception as exc:
         click.echo(f"  FAIL error: {exc}", err=True)
-        return False
+        return None
 
     if resp.status_code == 200:
-        click.echo("  FAILed (server notified)")
-        return True
+        state = resp.json()
+        click.echo(
+            "  Failure recorded: "
+            f"attempts={state['retry_count']} status={state['status']}"
+        )
+        return state
 
     click.echo(f"  FAIL failed: {resp.status_code} {resp.text}", err=True)
-    return False
+    return None
 
 
 _PLACEHOLDER_RE = re.compile(r"\{([^{}]+)\}")
@@ -514,6 +540,23 @@ def ack(ctx, event_id):
         sys.exit(1)
 
 
+def _fetch_event_list(config: RuntimeConfig, agent: str, state: str) -> list[dict]:
+    """Fetch one recipient-scoped event list with consistent CLI errors."""
+    try:
+        with httpx.Client(timeout=10) as client:
+            resp = client.get(
+                f"{config.url}/events/{state}",
+                params={"agent": agent},
+                headers=get_headers(config.token),
+            )
+    except httpx.ConnectError as exc:
+        raise click.ClickException(f"Cannot connect to {config.url}") from exc
+
+    if resp.status_code != 200:
+        raise click.ClickException(f"{resp.status_code} — {resp.text}")
+    return resp.json()
+
+
 @cli.command()
 @click.option("--agent", default=None, help="Agent name to inspect")
 @click.option("--count", is_flag=True, help="Print only the number of pending events")
@@ -529,11 +572,47 @@ def pending(ctx, agent, count):
         raise click.ClickException(
             "agent is not configured; pass --agent, set AGENT_BUS_AGENT, or select a context"
         )
+    events = _fetch_event_list(config, agent, "pending")
+    if count:
+        click.echo(len(events))
+    else:
+        click.echo(json.dumps(events, indent=2, ensure_ascii=False))
+
+
+@cli.command()
+@click.option("--agent", default=None, help="Agent name to inspect")
+@click.option("--count", is_flag=True, help="Print only the number of failed events")
+@click.pass_context
+def failed(ctx, agent, count):
+    """List terminally failed events for an agent."""
+    try:
+        config = _command_config(ctx, cli_agent=agent)
+    except ContextError as exc:
+        raise click.ClickException(str(exc)) from exc
+    agent = config.agent
+    if not agent:
+        raise click.ClickException(
+            "agent is not configured; pass --agent, set AGENT_BUS_AGENT, or select a context"
+        )
+    events = _fetch_event_list(config, agent, "failed")
+    click.echo(
+        len(events) if count else json.dumps(events, indent=2, ensure_ascii=False)
+    )
+
+
+@cli.command()
+@click.argument("event_id", type=int)
+@click.pass_context
+def requeue(ctx, event_id):
+    """Requeue one of the current agent's terminally failed events."""
+    try:
+        config = _command_config(ctx, resolve_agent=False)
+    except ContextError as exc:
+        raise click.ClickException(str(exc)) from exc
     try:
         with httpx.Client(timeout=10) as client:
-            resp = client.get(
-                f"{config.url}/events/pending",
-                params={"agent": agent},
+            resp = client.post(
+                f"{config.url}/events/{event_id}/requeue",
                 headers=get_headers(config.token),
             )
     except httpx.ConnectError:
@@ -543,12 +622,11 @@ def pending(ctx, agent, count):
     if resp.status_code != 200:
         click.echo(f"Error: {resp.status_code} — {resp.text}", err=True)
         sys.exit(1)
-
-    events = resp.json()
-    if count:
-        click.echo(len(events))
-    else:
-        click.echo(json.dumps(events, indent=2, ensure_ascii=False))
+    event = resp.json()
+    click.echo(
+        f"Event requeued: id={event['id']} status={event['status']} "
+        f"attempts={event['retry_count']}"
+    )
 
 
 @cli.command()
@@ -829,9 +907,9 @@ def doctor(ctx, agent, send_test, listener):
 @click.option(
     "--max-event-attempts",
     default=3,
-    type=int,
+    type=click.IntRange(min=1),
     show_default=True,
-    help="Skip an event after N consecutive processing failures (poison event protection)",
+    help="Move an event to terminal failed after N persisted handler failures",
 )
 @click.option(
     "--ack/--no-ack",
@@ -890,20 +968,12 @@ def listen(
     click.echo("---")
 
     completed_ids = set()
-    failure_counts = {}
-    skipped_ids = set()
 
     def process_event(event_data: dict) -> bool:
         """Process a received event."""
         event_id = event_data["id"]
 
         if event_id in completed_ids:
-            return False
-
-        if event_id in skipped_ids:
-            click.echo(
-                f"  Skipping poison event {event_id} (previously skipped after {max_event_attempts} attempts)"
-            )
             return False
 
         # Built-in control:shutdown — ACK and exit gracefully
@@ -917,7 +987,12 @@ def listen(
                 click.echo("")
                 return False
             click.echo("  control:shutdown received — shutting down gracefully.")
-            acked = _post_ack(config.url, token, event_id)
+            acked = _post_ack(
+                config.url,
+                token,
+                event_id,
+                event_data.get("retry_count", 0),
+            )
             if acked:
                 completed_ids.add(event_id)
             nonlocal shutdown_requested
@@ -943,46 +1018,45 @@ def listen(
         handler = handler_map.get(event_data["type"])
         should_ack = False
 
+        def record_handler_failure(error: str) -> None:
+            state = _post_fail(
+                config.url,
+                token,
+                event_id,
+                error,
+                expected_retry_count=event_data.get("retry_count", 0),
+                max_attempts=max_event_attempts,
+            )
+            if state and state["status"] == "failed":
+                completed_ids.add(event_id)
+                click.echo(
+                    f"  Event {event_id} is terminal failed after "
+                    f"{state['retry_count']} attempts; use 'agent-bus failed' "
+                    "and 'agent-bus requeue EVENT_ID' to recover it"
+                )
+
         if handler:
             try:
                 command = render_command(handler, event_data)
             except KeyError as exc:
                 click.echo(f"  Handler template missing field: {exc}", err=True)
-                failure_counts[event_id] = failure_counts.get(event_id, 0) + 1
-                if failure_counts[event_id] >= max_event_attempts:
-                    _post_fail(
-                        config.url,
-                        token,
-                        event_id,
-                        f"Handler template missing field: {exc}",
-                    )
-                    skipped_ids.add(event_id)
-                    click.echo(
-                        f"  Skipping poison event {event_id} after {max_event_attempts} consecutive failed attempts (handler template error)"
-                    )
+                record_handler_failure(f"Handler template missing field: {exc}")
             else:
                 should_ack = run_handler(command, handler_timeout, workdir)
                 if not should_ack:
-                    failure_counts[event_id] = failure_counts.get(event_id, 0) + 1
-                    if failure_counts[event_id] >= max_event_attempts:
-                        _post_fail(
-                            config.url,
-                            token,
-                            event_id,
-                            f"Handler failed after {max_event_attempts} consecutive attempts",
-                        )
-                        skipped_ids.add(event_id)
-                        click.echo(
-                            f"  Skipping poison event {event_id} after {max_event_attempts} consecutive failed attempts"
-                        )
+                    record_handler_failure("Handler failed")
         elif ack_on_receive:
             should_ack = True
         else:
             click.echo("  No handler configured; leaving event unacked")
 
-        if should_ack and _post_ack(config.url, token, event_id):
+        if should_ack and _post_ack(
+            config.url,
+            token,
+            event_id,
+            event_data.get("retry_count", 0),
+        ):
             completed_ids.add(event_id)
-            failure_counts.pop(event_id, None)
             click.echo("")
             return True
 
@@ -1019,7 +1093,6 @@ def listen(
                     click.echo("")
 
                     buffer = ""
-                    current_id = None
                     current_event = None
 
                     for line_bytes in resp.iter_lines():
@@ -1042,37 +1115,11 @@ def listen(
                                         f"Warning: could not parse event data: {buffer}",
                                         err=True,
                                     )
-                                    if current_id is not None:
-                                        try:
-                                            eid = int(current_id)
-                                        except (ValueError, TypeError):
-                                            pass
-                                        else:
-                                            failure_counts[eid] = (
-                                                failure_counts.get(eid, 0) + 1
-                                            )
-                                            if (
-                                                failure_counts[eid]
-                                                >= max_event_attempts
-                                            ):
-                                                _post_fail(
-                                                    config.url,
-                                                    token,
-                                                    eid,
-                                                    f"JSON decode error after {max_event_attempts} consecutive attempts",
-                                                )
-                                                skipped_ids.add(eid)
-                                                click.echo(
-                                                    f"  Skipping poison event {eid} after {max_event_attempts} consecutive failed attempts (JSON decode error)"
-                                                )
                             buffer = ""
-                            current_id = None
                             current_event = None
                             continue
 
-                        if line.startswith("id:"):
-                            current_id = line[3:].strip()
-                        elif line.startswith("event:"):
+                        if line.startswith("event:"):
                             current_event = line[6:].strip()
                         elif line.startswith("data:"):
                             buffer = line[5:].strip()

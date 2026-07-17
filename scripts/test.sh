@@ -171,7 +171,7 @@ OFFLINE_EVENT_ID=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(s
 # Now listen — should get the pending event
 # Use -N for no-buffer, write to temp file to avoid shell buffering issues
 SSE_TMP=$(mktemp)
-timeout 3 curl -sN "$AGENT_BUS_URL/events/stream?agent=coder" \
+curl --max-time 3 -sN "$AGENT_BUS_URL/events/stream?agent=coder" \
     -H "Authorization: Bearer $CODER_TOKEN" > "$SSE_TMP" 2>&1 || true
 SSE_OUTPUT=$(cat "$SSE_TMP")
 rm -f "$SSE_TMP"
@@ -191,7 +191,7 @@ echo ""
 echo "=== Test 9: ACKed Events Not Replayed ==="
 # Start another listen — should receive NO events (all ACKed)
 SSE_TMP2=$(mktemp)
-timeout 2 curl -sN "$AGENT_BUS_URL/events/stream?agent=coder" \
+curl --max-time 2 -sN "$AGENT_BUS_URL/events/stream?agent=coder" \
     -H "Authorization: Bearer $CODER_TOKEN" > "$SSE_TMP2" 2>&1 || true
 SSE_OUTPUT2=$(cat "$SSE_TMP2")
 rm -f "$SSE_TMP2"
@@ -215,7 +215,7 @@ curl -s -X POST "$AGENT_BUS_URL/events" \
 
 # Architect listener should NOT see events addressed to coder
 ARCH_TMP=$(mktemp)
-timeout 2 curl -sN "$AGENT_BUS_URL/events/stream?agent=architect" \
+curl --max-time 2 -sN "$AGENT_BUS_URL/events/stream?agent=architect" \
     -H "Authorization: Bearer $ARCHITECT_TOKEN" > "$ARCH_TMP" 2>&1 || true
 ARCH_SSE=$(cat "$ARCH_TMP")
 rm -f "$ARCH_TMP"
@@ -267,7 +267,7 @@ fi
 echo ""
 echo "=== Test 14: Agent token cannot stream another agent ==="
 FORBID_TMP=$(mktemp)
-HTTP_CODE=$(timeout 2 curl -sN -o "$FORBID_TMP" -w "%{http_code}" "$AGENT_BUS_URL/events/stream?agent=architect" \
+HTTP_CODE=$(curl --max-time 2 -sN -o "$FORBID_TMP" -w "%{http_code}" "$AGENT_BUS_URL/events/stream?agent=architect" \
     -H "Authorization: Bearer $CODER_TOKEN" 2>/dev/null || true)
 rm -f "$FORBID_TMP"
 if [ "$HTTP_CODE" = "403" ]; then
@@ -301,6 +301,89 @@ if echo "$RESP" | grep -q "forbidden-ack"; then
     pass "Pending endpoint returns architect's un-ACKed event"
 else
     fail "Pending endpoint did not return expected event" "$RESP"
+fi
+
+# ============================================================
+echo ""
+echo "=== Test 17: Durable failure lifecycle across listener processes ==="
+
+# Isolate the lifecycle acceptance event from intentionally un-ACKed events
+# created by earlier integration checks.
+CODER_PENDING=$(curl -s "$AGENT_BUS_URL/events/pending?agent=coder" \
+    -H "Authorization: Bearer $CODER_TOKEN")
+for ID in $(echo "$CODER_PENDING" | python3 -c \
+    'import json,sys; print(" ".join(str(e["id"]) for e in json.load(sys.stdin)))'); do
+    curl -s -X POST "$AGENT_BUS_URL/events/$ID/ack" \
+        -H "Authorization: Bearer $CODER_TOKEN" > /dev/null
+done
+
+RESP=$(curl -s -X POST "$AGENT_BUS_URL/events" \
+    -H "Authorization: Bearer $ARCHITECT_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"from_agent":"architect","to_agent":"coder","type":"test:durable-failure","payload":{"acceptance":true}}')
+FAILURE_EVENT_ID=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+
+for EXPECTED_ATTEMPT in 1 2 3; do
+    LISTEN_OUTPUT=$(AGENT_BUS_URL="$AGENT_BUS_URL" AGENT_BUS_TOKEN="$CODER_TOKEN" \
+        AGENT_BUS_AGENT=coder uv run agent-bus listen --once \
+        --max-event-attempts 3 --handler-timeout 5 \
+        --on test:durable-failure 'python3 -c "raise SystemExit(7)"' 2>&1 || true)
+    if echo "$LISTEN_OUTPUT" | grep -q "attempts=$EXPECTED_ATTEMPT"; then
+        pass "Listener process $EXPECTED_ATTEMPT persisted attempt $EXPECTED_ATTEMPT"
+    else
+        fail "Listener process did not persist attempt $EXPECTED_ATTEMPT" "$LISTEN_OUTPUT"
+    fi
+done
+
+FAILED_JSON=$(AGENT_BUS_URL="$AGENT_BUS_URL" AGENT_BUS_TOKEN="$CODER_TOKEN" \
+    AGENT_BUS_AGENT=coder uv run agent-bus failed)
+FAILED_STATE=$(echo "$FAILED_JSON" | python3 -c \
+    "import json,sys; e=json.load(sys.stdin)[0]; print(f'{e[\"id\"]}:{e[\"status\"]}:{e[\"retry_count\"]}:{bool(e[\"last_error\"])}')")
+if [ "$FAILED_STATE" = "$FAILURE_EVENT_ID:failed:3:True" ]; then
+    pass "Recipient inspects terminal failed event with attempt/error evidence"
+else
+    fail "Failed inspection returned unexpected state" "$FAILED_JSON"
+fi
+
+FOURTH_MARKER=$(mktemp)
+rm -f "$FOURTH_MARKER"
+FOURTH_OUTPUT=$(AGENT_BUS_URL="$AGENT_BUS_URL" AGENT_BUS_TOKEN="$CODER_TOKEN" \
+    AGENT_BUS_AGENT=coder uv run agent-bus listen --once --exit-after-idle 1 \
+    --on test:durable-failure "touch $FOURTH_MARKER" 2>&1 || true)
+if [ ! -e "$FOURTH_MARKER" ] && echo "$FOURTH_OUTPUT" | grep -q "No events received"; then
+    pass "Fourth listener does not receive terminal failed event"
+else
+    fail "Terminal failed event was redelivered" "$FOURTH_OUTPUT"
+fi
+rm -f "$FOURTH_MARKER"
+
+FORBIDDEN_INSPECT=$(curl -s -o /dev/null -w "%{http_code}" \
+    "$AGENT_BUS_URL/events/failed?agent=coder" \
+    -H "Authorization: Bearer $ARCHITECT_TOKEN")
+FORBIDDEN_REQUEUE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+    "$AGENT_BUS_URL/events/$FAILURE_EVENT_ID/requeue" \
+    -H "Authorization: Bearer $ARCHITECT_TOKEN")
+if [ "$FORBIDDEN_INSPECT" = "403" ] && [ "$FORBIDDEN_REQUEUE" = "403" ]; then
+    pass "Non-recipient cannot inspect or requeue failed event"
+else
+    fail "Failed-event auth scope is incorrect" \
+        "inspect=$FORBIDDEN_INSPECT requeue=$FORBIDDEN_REQUEUE"
+fi
+
+REQUEUE_OUTPUT=$(AGENT_BUS_URL="$AGENT_BUS_URL" AGENT_BUS_TOKEN="$CODER_TOKEN" \
+    AGENT_BUS_AGENT=coder uv run agent-bus requeue "$FAILURE_EVENT_ID" 2>&1 || true)
+SUCCESS_OUTPUT=$(AGENT_BUS_URL="$AGENT_BUS_URL" AGENT_BUS_TOKEN="$CODER_TOKEN" \
+    AGENT_BUS_AGENT=coder uv run agent-bus listen --once \
+    --on test:durable-failure true 2>&1 || true)
+FINAL_PENDING=$(AGENT_BUS_URL="$AGENT_BUS_URL" AGENT_BUS_TOKEN="$CODER_TOKEN" \
+    AGENT_BUS_AGENT=coder uv run agent-bus pending)
+if echo "$REQUEUE_OUTPUT" | grep -q "status=pending" \
+    && echo "$SUCCESS_OUTPUT" | grep -q "ACKed" \
+    && [ "$FINAL_PENDING" = "[]" ]; then
+    pass "Recipient requeues, handles successfully, ACKs, and leaves pending empty"
+else
+    fail "Requeue-to-ACK lifecycle incomplete" \
+        "requeue=$REQUEUE_OUTPUT listen=$SUCCESS_OUTPUT pending=$FINAL_PENDING"
 fi
 
 # ============================================================

@@ -32,7 +32,9 @@ class PendingCountTest(unittest.TestCase):
             resp.json.return_value = mock_events
 
             result = self.runner.invoke(
-                cli, ["pending", "--agent", "coder", "--count"], obj=self.ctx,
+                cli,
+                ["pending", "--agent", "coder", "--count"],
+                obj=self.ctx,
             )
 
         self.assertEqual(result.exit_code, 0)
@@ -51,7 +53,9 @@ class PendingCountTest(unittest.TestCase):
             resp.json.return_value = mock_events
 
             result = self.runner.invoke(
-                cli, ["pending", "--agent", "coder"], obj=self.ctx,
+                cli,
+                ["pending", "--agent", "coder"],
+                obj=self.ctx,
             )
 
         self.assertEqual(result.exit_code, 0)
@@ -67,11 +71,51 @@ class PendingCountTest(unittest.TestCase):
             resp.json.return_value = []
 
             result = self.runner.invoke(
-                cli, ["pending", "--agent", "coder", "--count"], obj=self.ctx,
+                cli,
+                ["pending", "--agent", "coder", "--count"],
+                obj=self.ctx,
             )
 
         self.assertEqual(result.exit_code, 0)
         self.assertEqual(result.output.strip(), "0")
+
+    def test_failed_command_uses_recipient_scoped_endpoint(self):
+        mock_events = [{"id": 9, "status": "failed", "retry_count": 3}]
+
+        with patch("client.cli.httpx.Client") as MockClient:
+            instance = MockClient.return_value.__enter__.return_value
+            resp = instance.get.return_value
+            resp.status_code = 200
+            resp.json.return_value = mock_events
+
+            result = self.runner.invoke(
+                cli,
+                ["failed", "--agent", "coder"],
+                obj=self.ctx,
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(json.loads(result.output), mock_events)
+        self.assertEqual(
+            instance.get.call_args.args[0], "http://localhost:8800/events/failed"
+        )
+        self.assertEqual(instance.get.call_args.kwargs["params"], {"agent": "coder"})
+
+    def test_requeue_command_posts_event_id(self):
+        with patch("client.cli.httpx.Client") as MockClient:
+            instance = MockClient.return_value.__enter__.return_value
+            resp = instance.post.return_value
+            resp.status_code = 200
+            resp.json.return_value = {"id": 9, "status": "pending", "retry_count": 3}
+
+            result = self.runner.invoke(cli, ["requeue", "9"], obj=self.ctx)
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("Event requeued: id=9 status=pending attempts=3", result.output)
+        self.assertEqual(
+            instance.post.call_args.args[0],
+            "http://localhost:8800/events/9/requeue",
+        )
 
 
 if __name__ == "__main__":

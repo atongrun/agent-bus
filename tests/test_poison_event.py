@@ -82,6 +82,7 @@ POISON_EVENT = {
     "from_agent": "architect",
     "to_agent": "coder",
     "status": "delivered",
+    "retry_count": 0,
     "payload": {"sim": "poison"},
 }
 
@@ -95,15 +96,26 @@ def _run_listen(replays, max_attempts, handler_cmd):
     def client_factory(*args, **kwargs):
         return _FakeClient(POISON_EVENT, budget, *args, **kwargs)
 
+    attempts = [0]
+
+    def record_failure(*args, **kwargs):
+        attempts[0] += 1
+        status = "failed" if attempts[0] >= max_attempts else "pending"
+        return {"status": status, "retry_count": attempts[0]}
+
     runner = CliRunner()
-    with mock.patch("client.cli.httpx.Client", side_effect=client_factory), mock.patch(
-        # poison events never ACK; stub the network ACK so nothing hits a server.
-        "client.cli._post_ack",
-        return_value=False,
-    ), mock.patch(
-        # Also stub _post_fail so poison-branch calls don't hit the network.
-        "client.cli._post_fail",
-        return_value=True,
+    with (
+        mock.patch("client.cli.httpx.Client", side_effect=client_factory),
+        mock.patch(
+            # poison events never ACK; stub the network ACK so nothing hits a server.
+            "client.cli._post_ack",
+            return_value=False,
+        ),
+        mock.patch(
+            # Also stub _post_fail so poison-branch calls don't hit the network.
+            "client.cli._post_fail",
+            side_effect=record_failure,
+        ),
     ):
         return runner.invoke(
             cli,
@@ -129,16 +141,69 @@ def _run_listen(replays, max_attempts, handler_cmd):
 # can count how many times it actually ran.
 def _always_fail_handler(marker_path):
     # Appends one line per run, then exits non-zero.
-    py = (
-        "import sys;"
-        f"open({marker_path!r}, 'a').write('run\\n');"
-        "sys.exit(7)"
-    )
+    py = f"import sys;open({marker_path!r}, 'a').write('run\\n');sys.exit(7)"
     return f'{sys.executable} -c "{py}"'
 
 
 class PoisonEventFailPersistenceTests(unittest.TestCase):
     """Tests for server-side fail persistence (ABUS-SERVER-FAIL-PERSIST-008)."""
+
+    def test_each_independent_once_listener_records_its_failure(self):
+        """Every process reports one attempt; the server owns the shared count."""
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import MagicMock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = str(Path(tmp) / "runs.txt")
+            fail_mock = MagicMock()
+            fail_mock.side_effect = [
+                {"status": "pending", "retry_count": 1},
+                {"status": "pending", "retry_count": 2},
+                {"status": "failed", "retry_count": 3},
+            ]
+
+            for observed_retry_count in range(3):
+                budget = [1]
+                event = {**POISON_EVENT, "retry_count": observed_retry_count}
+
+                def client_factory(*args, **kwargs):
+                    return _FakeClient(event, budget, *args, **kwargs)
+
+                runner = CliRunner()
+                with (
+                    mock.patch("client.cli.httpx.Client", side_effect=client_factory),
+                    mock.patch("client.cli._post_ack", return_value=False),
+                    mock.patch("client.cli._post_fail", side_effect=fail_mock),
+                ):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "listen",
+                            "--agent",
+                            "coder",
+                            "--once",
+                            "--max-event-attempts",
+                            "3",
+                            "--handler-timeout",
+                            "5",
+                            "--on",
+                            "test:poison-sim",
+                            _always_fail_handler(marker),
+                        ],
+                        obj={"url": "http://fake", "token": "x"},
+                    )
+                self.assertEqual(result.exit_code, 0, msg=result.output)
+
+            self.assertEqual(fail_mock.call_count, 3)
+            self.assertEqual(Path(marker).read_text().count("run"), 3)
+            self.assertEqual(
+                [
+                    call.kwargs["expected_retry_count"]
+                    for call in fail_mock.call_args_list
+                ],
+                [0, 1, 2],
+            )
 
     def test_post_fail_called_when_handler_exhausts_attempts(self):
         """_post_fail must be called when a handler exhausts max_event_attempts."""
@@ -148,7 +213,13 @@ class PoisonEventFailPersistenceTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             marker = str(Path(tmp) / "runs.txt")
-            fail_mock = MagicMock(return_value=True)
+            fail_mock = MagicMock(
+                side_effect=[
+                    {"status": "pending", "retry_count": 1},
+                    {"status": "pending", "retry_count": 2},
+                    {"status": "failed", "retry_count": 3},
+                ]
+            )
 
             budget = [6]
 
@@ -156,31 +227,48 @@ class PoisonEventFailPersistenceTests(unittest.TestCase):
                 return _FakeClient(POISON_EVENT, budget, *args, **kwargs)
 
             runner = CliRunner()
-            with mock.patch("client.cli.httpx.Client", side_effect=client_factory), \
-                 mock.patch("client.cli._post_ack", return_value=False), \
-                 mock.patch("client.cli._post_fail", side_effect=fail_mock):
+            with (
+                mock.patch("client.cli.httpx.Client", side_effect=client_factory),
+                mock.patch("client.cli._post_ack", return_value=False),
+                mock.patch("client.cli._post_fail", side_effect=fail_mock),
+            ):
                 result = runner.invoke(
                     cli,
                     [
                         "listen",
-                        "--agent", "coder",
-                        "--max-event-attempts", "3",
-                        "--exit-after-idle", "1",
-                        "--handler-timeout", "5",
-                        "--on", "test:poison-sim",
+                        "--agent",
+                        "coder",
+                        "--max-event-attempts",
+                        "3",
+                        "--exit-after-idle",
+                        "1",
+                        "--handler-timeout",
+                        "5",
+                        "--on",
+                        "test:poison-sim",
                         _always_fail_handler(marker),
                     ],
                     obj={"url": "http://fake", "token": "x"},
                 )
 
             self.assertEqual(result.exit_code, 0, msg=result.output)
-            # _post_fail should have been called exactly once (after 3rd failure)
-            self.assertEqual(fail_mock.call_count, 1,
-                             msg=f"_post_fail called {fail_mock.call_count} times. Output:\n{result.output}")
-            args, _ = fail_mock.call_args
-            self.assertEqual(args[2], 42, msg=f"Wrong event_id. Output:\n{result.output}")
-            self.assertIn("Handler failed after 3 consecutive attempts", args[3],
-                          msg=f"Wrong error text. Output:\n{result.output}")
+            # Every failed handling attempt is persisted by the server.
+            self.assertEqual(
+                fail_mock.call_count,
+                3,
+                msg=f"_post_fail called {fail_mock.call_count} times. Output:\n{result.output}",
+            )
+            args, kwargs = fail_mock.call_args
+            self.assertEqual(
+                args[2], 42, msg=f"Wrong event_id. Output:\n{result.output}"
+            )
+            self.assertIn(
+                "Handler failed",
+                args[3],
+                msg=f"Wrong error text. Output:\n{result.output}",
+            )
+            self.assertEqual(kwargs["expected_retry_count"], 0)
+            self.assertEqual(kwargs["max_attempts"], 3)
 
     def test_post_fail_not_called_on_success(self):
         """_post_fail must NOT be called when the handler succeeds."""
@@ -195,18 +283,25 @@ class PoisonEventFailPersistenceTests(unittest.TestCase):
 
         ok_handler = f'{sys.executable} -c "raise SystemExit(0)"'
         runner = CliRunner()
-        with mock.patch("client.cli.httpx.Client", side_effect=client_factory), \
-             mock.patch("client.cli._post_ack", return_value=False), \
-             mock.patch("client.cli._post_fail", side_effect=fail_mock):
+        with (
+            mock.patch("client.cli.httpx.Client", side_effect=client_factory),
+            mock.patch("client.cli._post_ack", return_value=False),
+            mock.patch("client.cli._post_fail", side_effect=fail_mock),
+        ):
             result = runner.invoke(
                 cli,
                 [
                     "listen",
-                    "--agent", "coder",
-                    "--max-event-attempts", "3",
-                    "--exit-after-idle", "1",
-                    "--handler-timeout", "5",
-                    "--on", "test:poison-sim",
+                    "--agent",
+                    "coder",
+                    "--max-event-attempts",
+                    "3",
+                    "--exit-after-idle",
+                    "1",
+                    "--handler-timeout",
+                    "5",
+                    "--on",
+                    "test:poison-sim",
                     ok_handler,
                 ],
                 obj={"url": "http://fake", "token": "x"},
@@ -223,8 +318,8 @@ class PoisonEventTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             marker = str(Path(tmp) / "runs.txt")
-            # Replay the poison event 6 times but cap attempts at 3: the handler
-            # must run at most 3 times, then the event is skipped.
+            # Replay the poison event 6 times but make the server return terminal
+            # failed on attempt 3. Buffered duplicates must not rerun the handler.
             result = _run_listen(
                 replays=6, max_attempts=3, handler_cmd=_always_fail_handler(marker)
             )
@@ -237,9 +332,9 @@ class PoisonEventTests(unittest.TestCase):
                 3,
                 msg=f"handler ran {runs} times, expected exactly 3 (capped). Output:\n{result.output}",
             )
-            self.assertIn("Skipping poison event 42", result.output)
+            self.assertIn("Event 42 is terminal failed after 3 attempts", result.output)
 
-    def test_skipped_event_not_rerun_on_later_replays(self):
+    def test_terminal_event_not_rerun_on_later_buffered_replays(self):
         import tempfile
         from pathlib import Path
 
@@ -251,21 +346,24 @@ class PoisonEventTests(unittest.TestCase):
 
             self.assertEqual(result.exit_code, 0, msg=result.output)
             runs = Path(marker).read_text().count("run") if Path(marker).exists() else 0
-            # Cap is 2: handler runs twice, then skipped for all remaining replays.
-            self.assertEqual(runs, 2, msg=f"handler ran {runs} times, expected 2. Output:\n{result.output}")
-            # The "previously skipped" line proves later replays short-circuit.
-            self.assertIn("previously skipped", result.output)
+            # Cap is 2: handler runs twice, then local buffered duplicates are ignored.
+            self.assertEqual(
+                runs,
+                2,
+                msg=f"handler ran {runs} times, expected 2. Output:\n{result.output}",
+            )
+            self.assertIn("Event 42 is terminal failed after 2 attempts", result.output)
 
     def test_succeeding_handler_is_not_skipped(self):
         # A handler that always succeeds should ACK and never trip poison logic.
         # With _post_ack stubbed to False the event won't be marked completed,
         # so it replays; but since the handler SUCCEEDS, should_ack is True and
-        # failure_counts is never incremented -> no skip message ever appears.
+        # no failed attempt is recorded and no terminal message appears.
         ok_handler = f'{sys.executable} -c "raise SystemExit(0)"'
         result = _run_listen(replays=5, max_attempts=3, handler_cmd=ok_handler)
 
         self.assertEqual(result.exit_code, 0, msg=result.output)
-        self.assertNotIn("Skipping poison event", result.output)
+        self.assertNotIn("terminal failed", result.output)
 
 
 if __name__ == "__main__":

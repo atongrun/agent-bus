@@ -12,11 +12,13 @@ from server.db import (
     ack_event,
     check_new_events,
     get_event,
+    get_failed_events,
     get_max_event_id,
     get_pending_events,
     insert_event,
     mark_delivered,
-    mark_failed,
+    record_failure,
+    requeue_event,
 )
 from server.models import EventCreate, EventFail
 
@@ -45,7 +47,9 @@ def _require_agent(auth: AuthContext, agent: str, action: str) -> None:
     if auth.legacy:
         return
     if auth.agent != agent:
-        raise HTTPException(status_code=403, detail=f"Token is not allowed to {action} for this agent")
+        raise HTTPException(
+            status_code=403, detail=f"Token is not allowed to {action} for this agent"
+        )
 
 
 @router.post("", status_code=201)
@@ -70,6 +74,7 @@ async def create_event(
 async def acknowledge_event(
     event_id: int,
     request: Request,
+    expected_retry_count: int | None = Query(default=None, ge=0),
     auth: AuthContext = Depends(verify_token),
 ):
     """Acknowledge an event, marking it as processed."""
@@ -80,23 +85,22 @@ async def acknowledge_event(
 
     _require_agent(auth, row["to_agent"], "ack events")
 
-    # Already acked — idempotent, return success
-    if row["status"] == "acked":
-        return {
-            "id": event_id,
-            "status": "acked",
-            "acked_at": row["acked_at"],
-        }
-
-    success = ack_event(event_id)
-    if not success:
-        raise HTTPException(status_code=409, detail="Event cannot be acked (already acked or failed)")
-
-    updated = get_event(event_id)
+    outcome, updated = ack_event(event_id, expected_retry_count)
+    if outcome == "conflict":
+        raise HTTPException(
+            status_code=409, detail="Failed events must be requeued before ACK"
+        )
+    if outcome == "stale":
+        raise HTTPException(
+            status_code=409,
+            detail="Event attempt changed before ACK; inspect the current event state",
+        )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Event not found")
     return {
         "id": event_id,
         "status": "acked",
-        "acked_at": updated["acked_at"] if updated else None,
+        "acked_at": updated["acked_at"],
     }
 
 
@@ -107,30 +111,31 @@ async def fail_event(
     request: Request,
     auth: AuthContext = Depends(verify_token),
 ):
-    """Mark an event as failed after a listener exhausts its processing attempts."""
+    """Record one failed handler attempt and apply the terminal threshold."""
     row = get_event(event_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Event not found")
 
     _require_agent(auth, row["to_agent"], "fail events")
 
-    # Already acked — cannot fail
-    if row["status"] == "acked":
-        raise HTTPException(status_code=409, detail="Event already acked")
-
-    success = mark_failed(event_id, body.error)
-    if not success:
+    outcome, updated = record_failure(
+        event_id,
+        body.error,
+        body.max_attempts,
+        body.expected_retry_count,
+    )
+    if outcome == "conflict":
         raise HTTPException(
-            status_code=409,
-            detail="Event cannot be failed (already failed or invalid status)",
+            status_code=409, detail="ACKed events cannot record failures"
         )
-
-    updated = get_event(event_id)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Event not found")
     return {
         "id": event_id,
-        "status": "failed",
-        "retry_count": updated["retry_count"] if updated else 0,
-        "last_error": body.error,
+        "status": updated["status"],
+        "retry_count": updated["retry_count"],
+        "last_error": updated["last_error"],
+        "attempt_recorded": outcome in ("recorded", "failed"),
     }
 
 
@@ -145,10 +150,46 @@ async def list_pending_events(
     return [_row_to_response(row) for row in get_pending_events(agent)]
 
 
+@router.get("/failed")
+async def list_failed_events(
+    request: Request,
+    agent: str = Query(..., min_length=1, description="Agent name to inspect"),
+    auth: AuthContext = Depends(verify_token),
+):
+    """List terminally failed events for an agent."""
+    _require_agent(auth, agent, "list failed events")
+    return [_row_to_response(row) for row in get_failed_events(agent)]
+
+
+@router.post("/{event_id}/requeue")
+async def requeue_failed_event(
+    event_id: int,
+    request: Request,
+    auth: AuthContext = Depends(verify_token),
+):
+    """Explicitly return a recipient's terminal failed event to pending."""
+    row = get_event(event_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Event not found")
+    _require_agent(auth, row["to_agent"], "requeue events")
+
+    outcome, updated = requeue_event(event_id)
+    if outcome == "conflict":
+        raise HTTPException(
+            status_code=409,
+            detail="Only failed or already-pending events can be requeued",
+        )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Event not found")
+    return _row_to_response(updated)
+
+
 @router.get("/stream")
 async def stream_events(
     request: Request,
-    agent: str = Query(..., min_length=1, description="Agent name to receive events for"),
+    agent: str = Query(
+        ..., min_length=1, description="Agent name to receive events for"
+    ),
     auth: AuthContext = Depends(verify_token),
 ):
     """SSE endpoint that streams events to an agent.
@@ -159,22 +200,23 @@ async def stream_events(
     _require_agent(auth, agent, "stream events")
 
     async def event_generator() -> AsyncGenerator[str, None]:
+        # Capture the high-water mark before replay. An event created after this
+        # point is either included in the replay query or has a larger ID for the
+        # polling phase, so there is no query/max race that can skip it.
+        last_id = get_max_event_id(agent)
+
         # Phase 1: Replay all pending/delivered (un-acked) events
         pending = get_pending_events(agent)
         for row in pending:
-            # Mark as delivered if still pending
-            if row["status"] == "pending":
-                mark_delivered(row["id"])
-                row["status"] = "delivered"
+            row = mark_delivered(row["id"])
+            if row is None or row["status"] not in ("pending", "delivered"):
+                continue
             data = _row_to_response(row)
             yield f"id: {row['id']}\nevent: message\ndata: {json.dumps(data)}\n\n"
 
-        # Phase 2: Initialize last_id to the highest event ID this agent has,
-        # so polling doesn't replay already-seen events (including acked ones)
-        last_id = max(
-            get_max_event_id(agent),
-            max((r["id"] for r in pending), default=0)
-        )
+        # Phase 2: advance past every replayed event without skipping events
+        # created between the high-water read and the replay query.
+        last_id = max(last_id, max((r["id"] for r in pending), default=0))
 
         # Phase 3: Poll for new events
         while True:
@@ -185,9 +227,9 @@ async def stream_events(
             new_events = check_new_events(agent, last_id)
             for row in new_events:
                 last_id = max(last_id, row["id"])
-                if row["status"] == "pending":
-                    mark_delivered(row["id"])
-                    row["status"] = "delivered"
+                row = mark_delivered(row["id"])
+                if row is None or row["status"] not in ("pending", "delivered"):
+                    continue
                 data = _row_to_response(row)
                 yield f"id: {row['id']}\nevent: message\ndata: {json.dumps(data)}\n\n"
 
