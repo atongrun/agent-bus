@@ -8,28 +8,36 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class BootstrapDocumentationTests(unittest.TestCase):
-    def test_client_guides_cover_safe_bootstrap_patterns(self):
-        documents = {}
-        for relative in ("README.md", "docs/guide/installation.md"):
-            with self.subTest(path=relative):
-                content = (ROOT / relative).read_text(encoding="utf-8")
-                documents[relative] = content
-                self.assertIn("/bootstrap/token", content)
-                self.assertIn("-K ", content)
-                self.assertIn("high-sensitivity provisioning credential", content)
-                self.assertNotRegex(
-                    content,
-                    r"(?:-H|--header)\s+['\"]?X-Bootstrap-Secret:",
-                )
-                self.assertIn("temporary_file", content)
-                self.assertIn('> "$temporary_file"', content)
-                self.assertIn('mv -f "$temporary_file" "$credential_file"', content)
+    def test_readme_keeps_bootstrap_discoverable_without_the_full_recipe(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
-        readme = documents["README.md"]
-        guide = documents["docs/guide/installation.md"]
-        self.assertIn("mkdir -p ~/.config/agent-bus", readme)
-        self.assertIn("chmod 700 ~/.config/agent-bus", readme)
-        self.assertIn("coder.credentials.env", readme)
+        self.assertIn("bootstrap token endpoint", readme)
+        self.assertIn("disabled by default", readme)
+        self.assertRegex(readme, r"high-sensitivity\s+provisioning credential")
+        self.assertIn("docs/guide/installation.md", readme)
+
+        self.assertNotIn("-K ", readme)
+        self.assertNotIn("temporary_file", readme)
+        self.assertNotIn('mv -f "$temporary_file" "$credential_file"', readme)
+        self.assertNotIn("icacls $root", readme)
+
+    def test_installation_guide_covers_safe_bootstrap_patterns(self):
+        guide = (ROOT / "docs/guide/installation.md").read_text(encoding="utf-8")
+
+        self.assertIn("/bootstrap/token", guide)
+        self.assertIn("Do not pass it with curl `-H` or `--header`", guide)
+        self.assertIn("-K ", guide)
+        self.assertRegex(guide, r"without writing either secret to the\s+terminal")
+        self.assertRegex(guide, r"high-sensitivity\s+provisioning credential")
+        self.assertNotRegex(
+            guide,
+            r"(?:-H|--header)\s+['\"]?X-Bootstrap-Secret:",
+        )
+        self.assertIn("mkdir -p ~/.config/agent-bus", guide)
+        self.assertIn("chmod 700 ~/.config/agent-bus", guide)
+        self.assertIn("temporary_file", guide)
+        self.assertIn('> "$temporary_file"', guide)
+        self.assertIn('mv -f "$temporary_file" "$credential_file"', guide)
         self.assertIn("icacls $root /inheritance:r", guide)
         self.assertIn('if ($LASTEXITCODE -ne 0) { throw "Failed to protect', guide)
         self.assertIn("Move-Item -Force $temporaryFile $credentialFile", guide)
