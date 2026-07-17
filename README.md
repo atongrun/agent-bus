@@ -47,6 +47,9 @@ messaging or workflow orchestration.
   reconnect until they are ACKed or moved to the failed state.
 - `agent-bus listen` acknowledges an event only after its matching handler
   exits successfully.
+- Handler failures are counted by the server across listener processes;
+  terminal failures remain inspectable until the recipient explicitly requeues
+  them.
 - Per-agent tokens scope sending, receiving, inspection, and ACK operations to
   one agent identity.
 - Event payloads and local handlers remain runtime-agnostic.
@@ -275,6 +278,8 @@ agent-bus doctor
 agent-bus doctor --send-test
 agent-bus send --to coder --type task:new --payload-file payload.json
 agent-bus pending
+agent-bus failed
+agent-bus requeue 42
 agent-bus ack 42
 agent-bus listen --on task:new "echo {payload.prompt}"
 agent-bus context list
@@ -286,6 +291,9 @@ agent-bus context show
   event; the event record remains persisted.
 - `pending` lists events in the pending or delivered state for the selected
   agent.
+- `failed` lists terminal failed events, including the cumulative attempt count
+  and last error. `requeue EVENT_ID` explicitly returns one of those events to
+  pending without discarding its failure evidence.
 - `ack EVENT_ID` manually acknowledges an event addressed to the selected
   agent.
 - `context list` and `context show` display connection and credential

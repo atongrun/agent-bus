@@ -39,9 +39,11 @@ class AckResponse(BaseModel):
 
 
 class EventFail(BaseModel):
-    """Request body for failing an event."""
+    """Request body for recording one failed handling attempt."""
 
     error: Optional[str] = None
+    max_attempts: int = Field(default=3, ge=1)
+    expected_retry_count: Optional[int] = Field(default=None, ge=0)
 
 
 class BootstrapTokenRequest(BaseModel):

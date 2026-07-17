@@ -28,10 +28,14 @@ Use these queue-style rules as the baseline:
 - Treat delivery as at-least-once, not exactly-once.
 - Make handlers idempotent by using `id` or `payload.task_id`.
 - Keep un-ACKed events inspectable and replayable.
+- Inspect terminal failures with `agent-bus failed` and require an explicit
+  recipient `requeue` before redelivery.
 - Prefer explicit failure events over silently swallowing handler errors.
 
-Future retry work should add leases, attempt counts, last error, and a
-dead-letter state before introducing an external queue.
+The current server persists attempt counts and last errors across listener
+processes, then holds repeatedly failing work in terminal `failed`. Keep that
+simple explicit recovery model until real multi-consumer load requires a
+different coordination design.
 
 ## Client Experience Rules
 
@@ -65,7 +69,6 @@ a failure when the Tailscale URL works.
 Keep free-form payloads for now, but gradually converge on a task envelope:
 
 - `task_id`
-- `idempotency_key`
 - `title`
 - `prompt`
 - `repo`
@@ -75,8 +78,9 @@ Keep free-form payloads for now, but gradually converge on a task envelope:
 - `last_error`
 - `deadline`
 
-Do not enforce all fields in v0.2.x. Start by documenting the envelope and
-making CLI/debug output easier to read.
+Do not enforce this application envelope in v0.2.x. Agent Bus Core uses its
+server event ID and persisted retry count for delivery recovery; application
+deduplication remains the handler's responsibility.
 
 ## What Not To Do Yet
 

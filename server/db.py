@@ -75,28 +75,25 @@ def init_db():
             pass  # Column already exists — safe on re-init
 
 
-def insert_event(from_agent: str, to_agent: str, event_type: str,
-                 payload_json: str) -> dict:
+def insert_event(
+    from_agent: str, to_agent: str, event_type: str, payload_json: str
+) -> dict:
     """Insert a new event and return it as a dict."""
     with get_db() as conn:
         cursor = conn.execute(
             """INSERT INTO events (from_agent, to_agent, type, payload_json)
                VALUES (?, ?, ?, ?)""",
-            (from_agent, to_agent, event_type, payload_json)
+            (from_agent, to_agent, event_type, payload_json),
         )
         event_id = cursor.lastrowid
-        row = conn.execute(
-            "SELECT * FROM events WHERE id = ?", (event_id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
         return dict(row)
 
 
 def get_event(event_id: int) -> dict | None:
     """Get a single event by ID."""
     with get_db() as conn:
-        row = conn.execute(
-            "SELECT * FROM events WHERE id = ?", (event_id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
         return dict(row) if row else None
 
 
@@ -107,7 +104,19 @@ def get_pending_events(agent: str) -> list[dict]:
             """SELECT * FROM events
                WHERE to_agent = ? AND status IN ('pending', 'delivered')
                ORDER BY created_at ASC""",
-            (agent,)
+            (agent,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_failed_events(agent: str) -> list[dict]:
+    """Get terminally failed events for an agent."""
+    with get_db() as conn:
+        rows = conn.execute(
+            """SELECT * FROM events
+               WHERE to_agent = ? AND status = 'failed'
+               ORDER BY created_at ASC""",
+            (agent,),
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -116,54 +125,128 @@ def get_max_event_id(agent: str) -> int:
     """Get the maximum event ID for a given agent (any status)."""
     with get_db() as conn:
         row = conn.execute(
-            "SELECT COALESCE(MAX(id), 0) FROM events WHERE to_agent = ?",
-            (agent,)
+            "SELECT COALESCE(MAX(id), 0) FROM events WHERE to_agent = ?", (agent,)
         ).fetchone()
         return row[0]
 
 
-def mark_delivered(event_id: int) -> bool:
-    """Mark an event as delivered. Returns True if updated."""
+def mark_delivered(event_id: int) -> dict | None:
+    """Atomically mark a pending event delivered and return its current row."""
     with get_db() as conn:
-        cursor = conn.execute(
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
             """UPDATE events
                SET status = 'delivered',
                    delivered_at = COALESCE(delivered_at, datetime('now'))
                WHERE id = ? AND status = 'pending'""",
-            (event_id,)
+            (event_id,),
         )
-        return cursor.rowcount > 0
+        row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+        return dict(row) if row else None
 
 
-def ack_event(event_id: int) -> bool:
-    """Mark an event as acknowledged. Returns True if updated."""
+def ack_event(
+    event_id: int,
+    expected_retry_count: int | None = None,
+) -> tuple[str, dict | None]:
+    """Atomically ACK an event, returning an outcome and current row."""
     with get_db() as conn:
-        cursor = conn.execute(
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+        if row is None:
+            return "not_found", None
+        if row["status"] == "acked":
+            return "already_acked", dict(row)
+        if row["status"] == "failed":
+            return "conflict", dict(row)
+        if (
+            expected_retry_count is not None
+            and row["retry_count"] != expected_retry_count
+        ):
+            return "stale", dict(row)
+
+        conn.execute(
             """UPDATE events
                SET status = 'acked',
                    acked_at = datetime('now')
                WHERE id = ? AND status IN ('pending', 'delivered')""",
-            (event_id,)
+            (event_id,),
         )
-        return cursor.rowcount > 0
+        updated = conn.execute(
+            "SELECT * FROM events WHERE id = ?", (event_id,)
+        ).fetchone()
+        return "acked", dict(updated)
 
 
-def mark_failed(event_id: int, last_error: str | None) -> bool:
-    """Mark an event as failed. Returns True if updated.
-
-    Only pending/delivered events transition to failed; an already-acked or
-    already-failed event is a no-op (returns False).
-    """
+def record_failure(
+    event_id: int,
+    last_error: str | None,
+    max_attempts: int,
+    expected_retry_count: int | None,
+) -> tuple[str, dict | None]:
+    """Atomically record one failed attempt and apply the terminal threshold."""
     with get_db() as conn:
-        cursor = conn.execute(
-            """UPDATE events
-               SET status = 'failed',
-                   retry_count = retry_count + 1,
-                   last_error = ?
-               WHERE id = ? AND status IN ('pending', 'delivered')""",
-            (last_error, event_id)
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+        if row is None:
+            return "not_found", None
+        if row["status"] == "failed":
+            return "already_failed", dict(row)
+        if row["status"] == "acked":
+            return "conflict", dict(row)
+        if (
+            expected_retry_count is not None
+            and row["retry_count"] != expected_retry_count
+        ):
+            return "stale", dict(row)
+
+        next_count = row["retry_count"] + 1
+        # Compatibility: pre-P0 listeners only called /fail after their local
+        # threshold was exhausted. With no observed count, preserve that
+        # terminal transition. New listeners always send the precondition and
+        # use the durable server-side threshold.
+        next_status = (
+            "failed"
+            if expected_retry_count is None or next_count >= max_attempts
+            else "pending"
         )
-        return cursor.rowcount > 0
+        conn.execute(
+            """UPDATE events
+               SET status = ?,
+                   retry_count = ?,
+                   last_error = ?,
+                   delivered_at = CASE WHEN ? = 'pending' THEN NULL ELSE delivered_at END
+               WHERE id = ? AND status IN ('pending', 'delivered')""",
+            (next_status, next_count, last_error, next_status, event_id),
+        )
+        updated = conn.execute(
+            "SELECT * FROM events WHERE id = ?", (event_id,)
+        ).fetchone()
+        return "failed" if next_status == "failed" else "recorded", dict(updated)
+
+
+def requeue_event(event_id: int) -> tuple[str, dict | None]:
+    """Atomically requeue a failed event while preserving failure evidence."""
+    with get_db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+        if row is None:
+            return "not_found", None
+        if row["status"] == "pending":
+            return "already_pending", dict(row)
+        if row["status"] != "failed":
+            return "conflict", dict(row)
+
+        conn.execute(
+            """UPDATE events
+               SET status = 'pending', delivered_at = NULL, acked_at = NULL
+               WHERE id = ? AND status = 'failed'""",
+            (event_id,),
+        )
+        updated = conn.execute(
+            "SELECT * FROM events WHERE id = ?", (event_id,)
+        ).fetchone()
+        return "requeued", dict(updated)
 
 
 def check_new_events(agent: str, after_id: int) -> list[dict]:
@@ -172,7 +255,8 @@ def check_new_events(agent: str, after_id: int) -> list[dict]:
         rows = conn.execute(
             """SELECT * FROM events
                WHERE to_agent = ? AND id > ?
+                 AND status IN ('pending', 'delivered')
                ORDER BY created_at ASC""",
-            (agent, after_id)
+            (agent, after_id),
         ).fetchall()
         return [dict(r) for r in rows]
