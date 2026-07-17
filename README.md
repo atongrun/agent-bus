@@ -314,6 +314,7 @@ remain available for CI and compatibility use.
 | [Protocol](docs/protocol.md) | Event fields, delivery semantics, event conventions, and API endpoints |
 | [Roadmap](docs/roadmap.md) | Current limitations and staged future work |
 | [Design](docs/design.md) | Architecture, SQLite/SSE choices, and the security model |
+| [Changelog](CHANGELOG.md) | Released capabilities, changes, and explicit boundaries |
 
 ## Development
 

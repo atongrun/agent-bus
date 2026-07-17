@@ -25,7 +25,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Agent Bus",
     description="Cross-machine durable event relay for AI agent collaboration",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
@@ -47,6 +47,7 @@ async def health():
 def main():
     """Entry point for uvicorn."""
     import uvicorn
+
     host = os.environ.get("AGENT_BUS_HOST", "0.0.0.0")
     port = int(os.environ.get("AGENT_BUS_PORT", "8800"))
     uvicorn.run("server.main:app", host=host, port=port, reload=False)
