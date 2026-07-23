@@ -51,6 +51,9 @@ class DockerDocumentationTests(unittest.TestCase):
     def test_readme_links_to_the_short_docker_path(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
+        self.assertIn("#### Option A: Native systemd", readme)
+        self.assertIn("#### Option B: Docker Compose", readme)
+        self.assertIn("do not install both on the same host", readme)
         self.assertIn("docker compose --env-file", readme)
         self.assertIn("Docker server instructions", readme)
         self.assertIn("The existing systemd installer remains supported", readme)

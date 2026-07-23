@@ -67,7 +67,12 @@ The current systemd server installer creates two agent identities named `archite
 and `coder`. In this walkthrough, `architect` is the sender and `coder` is the
 receiver. These names are installer defaults, not hardcoded protocol roles.
 
-### 1. Install the Server on Linux
+### 1. Install the Server
+
+Choose one server deployment path. Both run the same Agent Bus Core API on
+port 8800; do not install both on the same host.
+
+#### Option A: Native systemd
 
 Run this on a fresh systemd-based Linux server whose `python3` is version 3.11
 or newer:
@@ -100,16 +105,19 @@ curl http://127.0.0.1:8800/health
 
 The health response must contain `"status":"ok"`.
 
-Docker Compose is also supported as an alternative server deployment. For a
-new Docker deployment, use this path instead of running `scripts/install.sh`.
-It keeps SQLite in a persistent named volume and binds to localhost by default:
+#### Option B: Docker Compose
+
+Use this path on a Linux server with Docker Engine and the Compose v2 plugin.
+It runs the server as a non-root user, keeps SQLite in a persistent named
+volume, and publishes port 8800 only on localhost by default:
 
 ```bash
 git clone https://github.com/atongrun/agent-bus.git
 cd agent-bus
 install -d -m 700 ~/.config/agent-bus
 install -m 600 /dev/null ~/.config/agent-bus/server.docker.env
-# Add AGENT_BUS_AGENT_TOKENS=architect=<token>,coder=<token> to that file.
+${EDITOR:-vi} ~/.config/agent-bus/server.docker.env
+# Add: AGENT_BUS_AGENT_TOKENS=architect=<token>,coder=<token>
 docker compose --env-file ~/.config/agent-bus/server.docker.env up -d --build
 curl http://127.0.0.1:8800/health
 ```
