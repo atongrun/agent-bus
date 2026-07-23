@@ -54,7 +54,9 @@ class DockerDocumentationTests(unittest.TestCase):
         self.assertIn("#### Option A: Native systemd", readme)
         self.assertIn("#### Option B: Docker Compose", readme)
         self.assertIn("do not install both on the same host", readme)
-        self.assertIn("docker compose --env-file", readme)
+        self.assertIn("cp .env.example .env", readme)
+        self.assertIn("docker compose up -d --build", readme)
+        self.assertNotIn("docker compose --env-file", readme)
         self.assertIn("Docker server instructions", readme)
         self.assertIn("The existing systemd installer remains supported", readme)
         self.assertNotIn("AGENT_BUS_AGENT_TOKENS=architect=change-me", readme)
@@ -75,9 +77,12 @@ class DockerDocumentationTests(unittest.TestCase):
         ):
             self.assertIn(required, guide)
 
-        self.assertIn("outside the repository", guide)
+        self.assertIn("Compose reads automatically", guide)
+        self.assertIn("cp .env.example .env", guide)
+        self.assertIn("docker compose up -d --build", guide)
+        self.assertIn("If local policy requires credentials outside the checkout", guide)
+        self.assertIn("--env-file", guide)
         self.assertIn("pass secrets as Docker build arguments", guide)
-        self.assertIn("install -m 600 /dev/null ~/.config/agent-bus/server.docker.env", guide)
         self.assertIn("listener supervision", guide)
 
 

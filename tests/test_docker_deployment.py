@@ -9,6 +9,7 @@ DOCKERFILE = ROOT / "Dockerfile"
 DOCKERIGNORE = ROOT / ".dockerignore"
 COMPOSE = ROOT / "compose.yaml"
 DOCKER_TEST = ROOT / "scripts/test-docker.sh"
+ENV_EXAMPLE = ROOT / ".env.example"
 
 
 def read(path: Path) -> str:
@@ -77,7 +78,18 @@ class DockerDeploymentTests(unittest.TestCase):
             self.assertIn(pattern, ignored)
 
         gitignore = read(ROOT / ".gitignore")
+        self.assertNotIn("!.env.example", ignored)
+        self.assertIn(".env", gitignore)
         self.assertIn("*.docker.env", gitignore)
+
+    def test_env_example_is_safe_to_copy_but_fails_closed_until_configured(self):
+        example = read(ENV_EXAMPLE)
+
+        self.assertIn("AGENT_BUS_AGENT_TOKENS=", example)
+        self.assertNotIn("AGENT_BUS_AGENT_TOKENS=architect=", example)
+        self.assertNotIn("change-me", example)
+        self.assertNotIn("dev-token", example)
+        self.assertNotRegex(example, r"(?m)^AGENT_BUS_AGENT_TOKENS=.+$")
 
     def test_compose_uses_single_agent_bus_service_with_persistent_named_volume(self):
         compose = read(COMPOSE)
@@ -133,6 +145,9 @@ class DockerDeploymentTests(unittest.TestCase):
         self.assertIn('case "$TEST_ID" in', script)
         self.assertIn("AGENT_BUS_DOCKER_TEST_ID must contain only", script)
         self.assertIn('--project-name "agent-bus-test-${TEST_ID}"', script)
+        self.assertIn('--project-directory "$TEST_TMP"', script)
+        self.assertIn('ENV_FILE="$TEST_TMP/.env"', script)
+        self.assertNotIn('--env-file "$ENV_FILE"', script)
         self.assertIn('TEST_VOLUME="agent-bus-test-${TEST_ID}"', script)
         self.assertIn('TEST_IMAGE="agent-bus:test-${TEST_ID}"', script)
 

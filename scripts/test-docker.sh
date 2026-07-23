@@ -15,7 +15,7 @@ TEST_PORT="${AGENT_BUS_DOCKER_TEST_PORT:-18898}"
 TEST_VOLUME="agent-bus-test-${TEST_ID}"
 TEST_IMAGE="agent-bus:test-${TEST_ID}"
 TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/agent-bus-docker-test.XXXXXX")"
-ENV_FILE="$TEST_TMP/docker.env"
+ENV_FILE="$TEST_TMP/.env"
 SENDER_TOKEN="sender-test-${TEST_ID}"
 RECEIVER_TOKEN="receiver-test-${TEST_ID}"
 BASE_URL="http://127.0.0.1:${TEST_PORT}"
@@ -23,9 +23,8 @@ BASE_URL="http://127.0.0.1:${TEST_PORT}"
 compose() {
     docker compose \
         --project-name "agent-bus-test-${TEST_ID}" \
-        --project-directory "$ROOT_DIR" \
+        --project-directory "$TEST_TMP" \
         --file "$ROOT_DIR/compose.yaml" \
-        --env-file "$ENV_FILE" \
         "$@"
 }
 

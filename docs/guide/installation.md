@@ -46,50 +46,55 @@ the server from the checked-out release, runs it as a non-root user, stores the
 SQLite database in the `agent-bus-data` named volume, and publishes port 8800
 only on localhost by default.
 
-Clone a release checkout, then create a protected runtime environment file
-outside the repository. Generate each token independently and replace the
-placeholders without printing real values into shell history or logs:
+Clone a release checkout, then create the protected `.env` file that Docker
+Compose reads automatically. Generate each token independently and add the
+mapping without printing real values into shell history or logs:
 
 ```bash
 git clone https://github.com/atongrun/agent-bus.git
 cd agent-bus
-
-install -d -m 700 ~/.config/agent-bus
-install -m 600 /dev/null ~/.config/agent-bus/server.docker.env
-${EDITOR:-vi} ~/.config/agent-bus/server.docker.env
+cp .env.example .env
+chmod 600 .env
+${EDITOR:-vi} .env
 ```
 
-The file must contain the per-agent token mapping. Bootstrap remains disabled
-unless its secret is explicitly added:
+Set the required per-agent token mapping. Bootstrap remains disabled unless its
+secret is explicitly added:
 
 ```text
 AGENT_BUS_AGENT_TOKENS=sender=<sender-token>,receiver=<receiver-token>
 # AGENT_BUS_BOOTSTRAP_SECRET=<random-bootstrap-secret>
 ```
 
-Do not copy this file into the checkout, pass secrets as Docker build arguments,
-or commit it. Compose fails before starting when `AGENT_BUS_AGENT_TOKENS` is
-missing. Start the service and verify its health:
+The checkout-local `.env` is ignored by Git and excluded by `.dockerignore`.
+Never force-add it, pass secrets as Docker build arguments, or copy it into an
+image. Compose fails before starting when `AGENT_BUS_AGENT_TOKENS` is blank.
+Start the service and verify its health:
 
 ```bash
-docker compose --env-file ~/.config/agent-bus/server.docker.env up -d --build
-docker compose --env-file ~/.config/agent-bus/server.docker.env ps
-docker compose --env-file ~/.config/agent-bus/server.docker.env logs --tail 50 agent-bus
+docker compose up -d --build
+docker compose ps
+docker compose logs --tail 50 agent-bus
 curl http://127.0.0.1:8800/health
 ```
 
 The health response must contain `"status":"ok"`. Normal operations are:
 
 ```bash
-docker compose --env-file ~/.config/agent-bus/server.docker.env logs -f agent-bus
-docker compose --env-file ~/.config/agent-bus/server.docker.env stop
-docker compose --env-file ~/.config/agent-bus/server.docker.env start
-docker compose --env-file ~/.config/agent-bus/server.docker.env down
+docker compose logs -f agent-bus
+docker compose stop
+docker compose start
+docker compose down
 ```
 
 `docker compose down` removes the container and network but preserves the named
 volume. Do not use `docker compose down -v` unless you intentionally want to
 delete the durable event database.
+
+If local policy requires credentials outside the checkout, create an owner-only
+file such as `~/.config/agent-bus/server.docker.env` and add `--env-file
+~/.config/agent-bus/server.docker.env` to each Compose command. This hardened
+alternative behaves identically; the shorter commands below assume `.env`.
 
 #### Docker Data Backup And Restore
 
@@ -98,22 +103,22 @@ SQLite database and its WAL files form one consistent snapshot:
 
 ```bash
 mkdir -m 700 agent-bus-backup
-docker compose --env-file ~/.config/agent-bus/server.docker.env stop agent-bus
+docker compose stop agent-bus
 docker run --rm \
   -v agent-bus-data:/data:ro \
   -v "$PWD/agent-bus-backup:/backup" \
   alpine:3.20 \
   tar -C /data -czf /backup/agent-bus-data.tgz .
-docker compose --env-file ~/.config/agent-bus/server.docker.env start agent-bus
+docker compose start agent-bus
 ```
 
-Keep `~/.config/agent-bus/server.docker.env` in the same protected backup system, but never
-put it inside the database archive or repository. To restore, first preserve the
-current volume separately, stop the service, and then replace the volume
-contents from a trusted backup:
+Keep `.env` (or the external env file) in the same protected backup system, but
+never put it inside the database archive or commit it. To restore, first
+preserve the current volume separately, stop the service, and then replace the
+volume contents from a trusted backup:
 
 ```bash
-docker compose --env-file ~/.config/agent-bus/server.docker.env stop agent-bus
+docker compose stop agent-bus
 docker run --rm \
   -v agent-bus-data:/data \
   alpine:3.20 \
@@ -123,7 +128,7 @@ docker run --rm \
   -v "$PWD/agent-bus-backup:/backup:ro" \
   alpine:3.20 \
   tar -C /data -xzf /backup/agent-bus-data.tgz
-docker compose --env-file ~/.config/agent-bus/server.docker.env start agent-bus
+docker compose start agent-bus
 curl http://127.0.0.1:8800/health
 ```
 
@@ -135,8 +140,8 @@ versions. Build from an explicit release tag so rollback remains auditable:
 ```bash
 git fetch --tags
 git checkout <new-release-tag>
-docker compose --env-file ~/.config/agent-bus/server.docker.env build --pull
-docker compose --env-file ~/.config/agent-bus/server.docker.env up -d
+docker compose build --pull
+docker compose up -d
 curl http://127.0.0.1:8800/health
 ```
 
@@ -154,9 +159,8 @@ the durable path rather than relying on container status alone:
 1. Run `agent-bus doctor` from both clients.
 2. Send a unique event with the sender token.
 3. Query `pending` with the recipient token and record the event ID.
-4. Recreate the container with `docker compose --env-file
-   ~/.config/agent-bus/server.docker.env up -d --force-recreate`, query `pending` again, and
-   confirm the same event ID survived in the named volume.
+4. Recreate the container with `docker compose up -d --force-recreate`, query
+   `pending` again, and confirm the same event ID survived in the named volume.
 5. ACK that ID with the recipient token.
 6. Query `pending` again and confirm it is empty.
 
@@ -207,15 +211,15 @@ Tailscale URL works.
 Use the Tailscale URL as the `--server` value when creating client contexts.
 
 The Compose deployment binds to `127.0.0.1` by default. To publish directly on
-the VPS Tailscale address, add the following non-secret value to the protected
-Docker environment file and recreate the service:
+the VPS Tailscale address, add the following non-secret value to `.env` (or the
+external Docker environment file) and recreate the service:
 
 ```text
 AGENT_BUS_BIND_ADDRESS=<vps-tailscale-ip>
 ```
 
 ```bash
-docker compose --env-file ~/.config/agent-bus/server.docker.env up -d
+docker compose up -d
 curl http://<vps-tailscale-ip>:8800/health
 ```
 

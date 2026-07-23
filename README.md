@@ -114,16 +114,17 @@ volume, and publishes port 8800 only on localhost by default:
 ```bash
 git clone https://github.com/atongrun/agent-bus.git
 cd agent-bus
-install -d -m 700 ~/.config/agent-bus
-install -m 600 /dev/null ~/.config/agent-bus/server.docker.env
-${EDITOR:-vi} ~/.config/agent-bus/server.docker.env
-# Add: AGENT_BUS_AGENT_TOKENS=architect=<token>,coder=<token>
-docker compose --env-file ~/.config/agent-bus/server.docker.env up -d --build
+cp .env.example .env
+chmod 600 .env
+${EDITOR:-vi} .env
+docker compose up -d --build
 curl http://127.0.0.1:8800/health
 ```
 
-Do not commit `server.docker.env`. For Tailscale binding, backup/restore, upgrades, and
-the full deployment verification loop, follow the
+Set `AGENT_BUS_AGENT_TOKENS=architect=<token>,coder=<token>` in `.env`; Compose
+will refuse to start while it is blank. The file is ignored by Git and excluded
+from the image build context. For an external env file, Tailscale binding,
+backup/restore, upgrades, and the full deployment verification loop, follow the
 [Docker server instructions](docs/guide/installation.md#docker-compose-server).
 The existing systemd installer remains supported.
 
