@@ -47,5 +47,45 @@ class BootstrapDocumentationTests(unittest.TestCase):
         self.assertIn("receiver.credentials.env", guide)
 
 
+class DockerDocumentationTests(unittest.TestCase):
+    def test_readme_links_to_the_short_docker_path(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("| Docker Compose |", readme)
+        self.assertIn("| Native systemd |", readme)
+        self.assertIn("bash scripts/install-docker.sh", readme)
+        self.assertIn("bash scripts/install.sh", readme)
+        self.assertNotIn("cp .env.example .env", readme)
+        self.assertNotIn("docker compose --env-file", readme)
+        self.assertIn("installation and security guide", readme)
+        self.assertNotIn("AGENT_BUS_AGENT_TOKENS=architect=change-me", readme)
+
+    def test_installation_guide_covers_docker_lifecycle_and_boundaries(self):
+        guide = (ROOT / "docs/guide/installation.md").read_text(encoding="utf-8")
+
+        for required in (
+            "### Docker Compose Server",
+            "agent-bus-data",
+            "Do not use `docker compose down -v`",
+            "#### Docker Data Backup And Restore",
+            "#### Docker Upgrade And Rollback",
+            "#### Docker Deployment Acceptance",
+            "AGENT_BUS_BIND_ADDRESS=<vps-tailscale-ip>",
+            "Send a unique event",
+            "Query `pending` again and confirm it is empty",
+        ):
+            self.assertIn(required, guide)
+
+        self.assertIn("bash scripts/install-docker.sh", guide)
+        self.assertIn("prints the new tokens once", guide)
+        self.assertIn("#### Manual Docker Configuration", guide)
+        self.assertIn("cp .env.example .env", guide)
+        self.assertIn("docker compose up -d --build", guide)
+        self.assertIn("If local policy requires credentials outside the checkout", guide)
+        self.assertIn("--env-file", guide)
+        self.assertIn("pass secrets as Docker build arguments", guide)
+        self.assertIn("listener supervision", guide)
+
+
 if __name__ == "__main__":
     unittest.main()

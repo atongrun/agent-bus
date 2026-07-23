@@ -1,0 +1,36 @@
+services:
+  agent-bus:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${AGENT_BUS_IMAGE:-agent-bus:local}
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      AGENT_BUS_HOST: 0.0.0.0
+      AGENT_BUS_PORT: "8800"
+      AGENT_BUS_DB_PATH: /data/agent-bus.db
+      AGENT_BUS_AGENT_TOKENS: ${AGENT_BUS_AGENT_TOKENS:?Set AGENT_BUS_AGENT_TOKENS in your Docker env file}
+      AGENT_BUS_BOOTSTRAP_SECRET: ${AGENT_BUS_BOOTSTRAP_SECRET:-}
+    ports:
+      - "${AGENT_BUS_BIND_ADDRESS:-127.0.0.1}:${AGENT_BUS_PUBLISHED_PORT:-8800}:8800"
+    volumes:
+      - agent-bus-data:/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('AGENT_BUS_PORT', '8800') + '/health', timeout=2).read()"
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  agent-bus-data:
+    name: ${AGENT_BUS_DATA_VOLUME:-agent-bus-data}
