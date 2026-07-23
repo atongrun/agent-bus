@@ -21,14 +21,11 @@ RECEIVER_TOKEN="receiver-test-${TEST_ID}"
 BASE_URL="http://127.0.0.1:${TEST_PORT}"
 
 compose() {
-    (
-        cd "$TEST_TMP"
-        docker compose \
-            --project-name "agent-bus-test-${TEST_ID}" \
-            --project-directory "$ROOT_DIR" \
-            --file "$ROOT_DIR/compose.yaml" \
-            "$@"
-    )
+    COMPOSE_ENV_FILES="$ENV_FILE" docker compose \
+        --project-name "agent-bus-test-${TEST_ID}" \
+        --project-directory "$ROOT_DIR" \
+        --file "$ROOT_DIR/compose.yaml" \
+        "$@"
 }
 
 cleanup() {

@@ -145,7 +145,7 @@ class DockerDeploymentTests(unittest.TestCase):
         self.assertIn('case "$TEST_ID" in', script)
         self.assertIn("AGENT_BUS_DOCKER_TEST_ID must contain only", script)
         self.assertIn('--project-name "agent-bus-test-${TEST_ID}"', script)
-        self.assertIn('cd "$TEST_TMP"', script)
+        self.assertIn('COMPOSE_ENV_FILES="$ENV_FILE"', script)
         self.assertIn('--project-directory "$ROOT_DIR"', script)
         self.assertIn('ENV_FILE="$TEST_TMP/.env"', script)
         self.assertNotIn('--env-file "$ENV_FILE"', script)
