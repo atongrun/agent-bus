@@ -9,6 +9,7 @@ DOCKERFILE = ROOT / "Dockerfile"
 DOCKERIGNORE = ROOT / ".dockerignore"
 COMPOSE = ROOT / "compose.yaml"
 DOCKER_TEST = ROOT / "scripts/test-docker.sh"
+DOCKER_INSTALLER = ROOT / "scripts/install-docker.sh"
 ENV_EXAMPLE = ROOT / ".env.example"
 
 
@@ -149,8 +150,19 @@ class DockerDeploymentTests(unittest.TestCase):
         self.assertIn('--project-directory "$ROOT_DIR"', script)
         self.assertIn('ENV_FILE="$TEST_TMP/.env"', script)
         self.assertNotIn('--env-file "$ENV_FILE"', script)
+        self.assertIn("COMPOSE_PROJECT_NAME=agent-bus-test-${TEST_ID}", script)
+        self.assertIn('bash "$ROOT_DIR/scripts/install-docker.sh"', script)
         self.assertIn('TEST_VOLUME="agent-bus-test-${TEST_ID}"', script)
         self.assertIn('TEST_IMAGE="agent-bus:test-${TEST_ID}"', script)
+
+    def test_docker_installer_is_an_explicit_executable_entrypoint(self):
+        installer = read(DOCKER_INSTALLER)
+
+        self.assertTrue(DOCKER_INSTALLER.stat().st_mode & 0o100)
+        self.assertIn("Install Agent Bus Server with Docker Compose", installer)
+        self.assertIn("AGENT_BUS_DOCKER_ENV_FILE", installer)
+        self.assertNotIn("dev-token", installer)
+        self.assertNotIn("change-me", installer)
 
 
 if __name__ == "__main__":

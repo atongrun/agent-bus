@@ -44,6 +44,7 @@ cleanup() {
 trap cleanup EXIT
 
 cat > "$ENV_FILE" <<EOF
+COMPOSE_PROJECT_NAME=agent-bus-test-${TEST_ID}
 AGENT_BUS_AGENT_TOKENS=sender=$SENDER_TOKEN,receiver=$RECEIVER_TOKEN
 AGENT_BUS_BIND_ADDRESS=127.0.0.1
 AGENT_BUS_PUBLISHED_PORT=$TEST_PORT
@@ -64,11 +65,8 @@ wait_for_health() {
     return 1
 }
 
-echo "Validating Compose configuration..."
-compose config --quiet
-
-echo "Building and starting isolated Docker deployment..."
-compose up -d --build
+echo "Installing isolated Docker deployment through the public installer..."
+AGENT_BUS_DOCKER_ENV_FILE="$ENV_FILE" bash "$ROOT_DIR/scripts/install-docker.sh"
 wait_for_health
 
 echo "Sending a durable event..."

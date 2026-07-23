@@ -46,33 +46,28 @@ the server from the checked-out release, runs it as a non-root user, stores the
 SQLite database in the `agent-bus-data` named volume, and publishes port 8800
 only on localhost by default.
 
-Clone a release checkout, then create the protected `.env` file that Docker
-Compose reads automatically. Generate each token independently and add the
-mapping without printing real values into shell history or logs:
+The recommended installer gives Docker the same first-run experience as the
+native systemd path:
 
 ```bash
 git clone https://github.com/atongrun/agent-bus.git
 cd agent-bus
-cp .env.example .env
-chmod 600 .env
-${EDITOR:-vi} .env
+bash scripts/install-docker.sh
 ```
 
-Set the required per-agent token mapping. Bootstrap remains disabled unless its
-secret is explicitly added:
+On first installation it:
 
-```text
-AGENT_BUS_AGENT_TOKENS=sender=<sender-token>,receiver=<receiver-token>
-# AGENT_BUS_BOOTSTRAP_SECRET=<random-bootstrap-secret>
-```
+- verifies Docker Compose v2 is available;
+- generates independent `architect` and `coder` tokens from `/dev/urandom`;
+- writes them to the Git-ignored `.env` file with mode `0600`;
+- validates, builds, and starts the Compose service;
+- waits for the container healthcheck; and
+- prints the new tokens once so they can be provisioned to clients.
 
-The checkout-local `.env` is ignored by Git and excluded by `.dockerignore`.
-Never force-add it, pass secrets as Docker build arguments, or copy it into an
-image. Compose fails before starting when `AGENT_BUS_AGENT_TOKENS` is blank.
-Start the service and verify its health:
+Rerunning the installer reuses the existing protected configuration and does
+not print its token values. Verify the service or follow its logs with:
 
 ```bash
-docker compose up -d --build
 docker compose ps
 docker compose logs --tail 50 agent-bus
 curl http://127.0.0.1:8800/health
@@ -90,6 +85,29 @@ docker compose down
 `docker compose down` removes the container and network but preserves the named
 volume. Do not use `docker compose down -v` unless you intentionally want to
 delete the durable event database.
+
+#### Manual Docker Configuration
+
+To choose different agent identities, create the protected `.env` yourself
+before starting the service:
+
+```bash
+cp .env.example .env
+chmod 600 .env
+${EDITOR:-vi} .env
+docker compose up -d --build
+```
+
+Set a unique token for every allowed agent:
+
+```text
+AGENT_BUS_AGENT_TOKENS=sender=<sender-token>,receiver=<receiver-token>
+# AGENT_BUS_BOOTSTRAP_SECRET=<random-bootstrap-secret>
+```
+
+The checkout-local `.env` is ignored by Git and excluded by `.dockerignore`.
+Never force-add it, pass secrets as Docker build arguments, or copy it into an
+image. Compose fails before starting when `AGENT_BUS_AGENT_TOKENS` is blank.
 
 If local policy requires credentials outside the checkout, create an owner-only
 file such as `~/.config/agent-bus/server.docker.env` and add `--env-file

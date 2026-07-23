@@ -63,203 +63,72 @@ deduplication.
 This walkthrough verifies Agent Bus Core with an `echo` handler. It does not
 require OpenCode or another AI runtime.
 
-The current systemd server installer creates two agent identities named `architect`
-and `coder`. In this walkthrough, `architect` is the sender and `coder` is the
-receiver. These names are installer defaults, not hardcoded protocol roles.
+### 1. Deploy the Server
 
-### 1. Install the Server
-
-Choose one server deployment path. Both run the same Agent Bus Core API on
-port 8800; do not install both on the same host.
-
-#### Option A: Native systemd
-
-Run this on a fresh systemd-based Linux server whose `python3` is version 3.11
-or newer:
+Clone Agent Bus on the server:
 
 ```bash
 git clone https://github.com/atongrun/agent-bus.git
 cd agent-bus
-python3 --version
-bash scripts/install.sh
 ```
 
-The installer:
+Then choose one deployment method:
 
-- copies the checkout to `/opt/agent-bus/app`;
-- creates a virtual environment and installs the project into it;
-- creates `/etc/agent-bus/.env` and `/opt/agent-bus/data`;
-- installs and starts `agent-bus.service`;
-- prints newly generated `architect` and `coder` tokens on the first install.
+| Method | Requirements | Install |
+| --- | --- | --- |
+| Docker Compose | Docker Engine with Compose v2 | `bash scripts/install-docker.sh` |
+| Native systemd | Linux with systemd and Python 3.11+ | `bash scripts/install.sh` |
 
-Save each printed token through a trusted channel. The server also stores the
-token mapping in the root-only `/etc/agent-bus/.env`; subsequent installer
-runs do not print existing tokens.
+Both installers generate separate `architect` and `coder` tokens, start the
+server, verify its health, and print new tokens only on first installation.
+Save each token through a trusted channel; the names are installer defaults,
+not hardcoded protocol roles.
 
-Verify the service on the Linux server:
+Docker runs as a non-root user and stores SQLite in the `agent-bus-data` named
+volume. The systemd path stores SQLite under `/opt/agent-bus/data`. Both serve
+on port 8800; Docker publishes it only on localhost by default. Use Tailscale or
+another trusted private transport for remote access.
+
+For logs, backup and restore, upgrades, rollback, custom identities, and manual
+installation, see the
+[installation and security guide](docs/guide/installation.md).
+
+### 2. Configure Two Clients
+
+Install the CLI on the sender and receiver, store each printed token in its own
+protected credential file, and create the `architect` and `coder` contexts.
+The [client setup guide](docs/guide/installation.md#native-client-contexts)
+contains the macOS, Linux, and Windows commands.
+
+Run `agent-bus doctor` on both clients before continuing.
+
+### 3. Verify the Event Loop
+
+Start an `echo` listener on the receiver:
 
 ```bash
-sudo systemctl status agent-bus
-curl http://127.0.0.1:8800/health
+agent-bus --context coder listen --on task:new "echo {payload.prompt}"
 ```
 
-The health response must contain `"status":"ok"`.
-
-#### Option B: Docker Compose
-
-Use this path on a Linux server with Docker Engine and the Compose v2 plugin.
-It runs the server as a non-root user, keeps SQLite in a persistent named
-volume, and publishes port 8800 only on localhost by default:
+Send one event from the sender:
 
 ```bash
-git clone https://github.com/atongrun/agent-bus.git
-cd agent-bus
-cp .env.example .env
-chmod 600 .env
-${EDITOR:-vi} .env
-docker compose up -d --build
-curl http://127.0.0.1:8800/health
-```
-
-Set `AGENT_BUS_AGENT_TOKENS=architect=<token>,coder=<token>` in `.env`; Compose
-will refuse to start while it is blank. The file is ignored by Git and excluded
-from the image build context. For an external env file, Tailscale binding,
-backup/restore, upgrades, and the full deployment verification loop, follow the
-[Docker server instructions](docs/guide/installation.md#docker-compose-server).
-The existing systemd installer remains supported.
-
-### 2. Install the CLI on Each Client
-
-The package is not currently published on PyPI. On each client with Git and
-Python 3.11+, install it from a source checkout.
-
-On macOS or Linux:
-
-```bash
-git clone https://github.com/atongrun/agent-bus.git
-cd agent-bus
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -e .
-agent-bus --help
-```
-
-On Windows PowerShell:
-
-```powershell
-git clone https://github.com/atongrun/agent-bus.git
-cd agent-bus
-py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -e .
-agent-bus --help
-```
-
-The remaining Quick Start commands use POSIX paths. Windows clients support the
-same context and event commands; follow the
-[Windows credential-file instructions](docs/guide/installation.md#obtaining-a-client-token)
-to apply a current-user-only ACL instead of POSIX file modes.
-
-### 3. Configure the Sender
-
-Run this on the sender machine. Put only the `architect` token in an owner-only
-file outside any repository:
-
-```bash
-mkdir -p ~/.config/agent-bus
-chmod 700 ~/.config/agent-bus
-install -m 600 /dev/null ~/.config/agent-bus/architect.credentials.env
-```
-
-Edit that file so it contains one line:
-
-```text
-AGENT_BUS_ARCHITECT_TOKEN=<architect-token>
-```
-
-Create and select the sender context:
-
-```bash
-agent-bus context add architect \
-  --server http://<vps-tailscale-ip>:8800 \
-  --agent architect \
-  --token-env AGENT_BUS_ARCHITECT_TOKEN \
-  --env-file ~/.config/agent-bus/architect.credentials.env \
-  --select
-
-agent-bus doctor
-```
-
-`doctor` checks that configuration is present, `/health` is reachable, and the
-token can list pending events for `architect`. It does not validate a local AI
-runtime or workspace.
-
-### 4. Configure and Start the Receiver
-
-Run this on the receiver machine using the separately provisioned `coder`
-token:
-
-```bash
-mkdir -p ~/.config/agent-bus
-chmod 700 ~/.config/agent-bus
-install -m 600 /dev/null ~/.config/agent-bus/coder.credentials.env
-```
-
-Edit that file so it contains one line:
-
-```text
-AGENT_BUS_CODER_TOKEN=<coder-token>
-```
-
-Create the receiver context and start a listener:
-
-```bash
-agent-bus context add coder \
-  --server http://<vps-tailscale-ip>:8800 \
-  --agent coder \
-  --token-env AGENT_BUS_CODER_TOKEN \
-  --env-file ~/.config/agent-bus/coder.credentials.env \
-  --select
-
-agent-bus doctor
-agent-bus listen --on task:new "echo {payload.prompt}"
-```
-
-Leave the listener running while you send the test event.
-
-### 5. Send One Test Event
-
-Back on the sender machine, create the payload explicitly:
-
-```bash
-cat > payload.json <<'JSON'
-{
-  "task_id": "quickstart-001",
-  "prompt": "Hello from Agent Bus"
-}
-JSON
-
 agent-bus --context architect send \
   --to coder \
   --type task:new \
-  --payload-file payload.json
+  --payload '{"task_id":"quickstart-001","prompt":"Hello from Agent Bus"}'
 ```
 
-The sender should print `Event sent` with a server-assigned event ID. The
-receiver should print the event, run `echo`, report handler exit code `0`, and
-print `ACKed`.
-
-After the listener has handled the event, stop it with Ctrl+C and verify on the
-receiver machine:
+The receiver should print the event, echo the prompt, and ACK it. Stop the
+listener with Ctrl+C, then confirm its durable inbox is empty:
 
 ```bash
 agent-bus --context coder pending
 ```
 
-The result should be an empty JSON array (`[]`). At this point Agent Bus Core is
-installed and the durable send, receive, handler, and ACK path works. A complete
-AI Worker workflow still requires a local adapter that manages the workspace
-and invokes the chosen tool.
+An empty JSON array (`[]`) proves the `send → receive → handler → ACK` path.
+Production adapters still need their own workspace, idempotency, and local tool
+policies; those concerns remain outside Agent Bus Core.
 
 ## Production Deployment
 

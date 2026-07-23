@@ -51,14 +51,13 @@ class DockerDocumentationTests(unittest.TestCase):
     def test_readme_links_to_the_short_docker_path(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
-        self.assertIn("#### Option A: Native systemd", readme)
-        self.assertIn("#### Option B: Docker Compose", readme)
-        self.assertIn("do not install both on the same host", readme)
-        self.assertIn("cp .env.example .env", readme)
-        self.assertIn("docker compose up -d --build", readme)
+        self.assertIn("| Docker Compose |", readme)
+        self.assertIn("| Native systemd |", readme)
+        self.assertIn("bash scripts/install-docker.sh", readme)
+        self.assertIn("bash scripts/install.sh", readme)
+        self.assertNotIn("cp .env.example .env", readme)
         self.assertNotIn("docker compose --env-file", readme)
-        self.assertIn("Docker server instructions", readme)
-        self.assertIn("The existing systemd installer remains supported", readme)
+        self.assertIn("installation and security guide", readme)
         self.assertNotIn("AGENT_BUS_AGENT_TOKENS=architect=change-me", readme)
 
     def test_installation_guide_covers_docker_lifecycle_and_boundaries(self):
@@ -77,7 +76,9 @@ class DockerDocumentationTests(unittest.TestCase):
         ):
             self.assertIn(required, guide)
 
-        self.assertIn("Compose reads automatically", guide)
+        self.assertIn("bash scripts/install-docker.sh", guide)
+        self.assertIn("prints the new tokens once", guide)
+        self.assertIn("#### Manual Docker Configuration", guide)
         self.assertIn("cp .env.example .env", guide)
         self.assertIn("docker compose up -d --build", guide)
         self.assertIn("If local policy requires credentials outside the checkout", guide)
