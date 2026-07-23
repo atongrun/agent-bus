@@ -1,6 +1,5 @@
 """Static regression checks for the Docker server deployment contract."""
 
-import re
 import unittest
 from pathlib import Path
 
