@@ -1,12 +1,19 @@
 # Agent Bus Installation Guide
 
-This guide covers the v0.2 lightweight deployment path: one server process and
-foreground CLI listeners or external adapters on each agent machine.
+This guide covers the v0.2 lightweight deployment paths: one server process
+installed through systemd or Docker Compose, plus foreground CLI listeners or
+external adapters on each agent machine.
 
 For the rationale behind this lightweight path, see
 [../recommended-practices.md](../recommended-practices.md).
 
 ## Server
+
+Choose either the native systemd installer or Docker Compose. Both run the same
+single-process Agent Bus Core and use the same `AGENT_BUS_*` configuration. The
+Docker path is an alternative deployment method, not a migration requirement.
+
+### Native systemd Server
 
 On a Linux VPS or local Linux machine:
 
@@ -31,6 +38,131 @@ Check the service:
 sudo systemctl status agent-bus
 curl http://localhost:8800/health
 ```
+
+### Docker Compose Server
+
+The Docker deployment needs Docker Engine with the Compose v2 plugin. It builds
+the server from the checked-out release, runs it as a non-root user, stores the
+SQLite database in the `agent-bus-data` named volume, and publishes port 8800
+only on localhost by default.
+
+Clone a release checkout, then create a protected runtime environment file
+outside the repository. Generate each token independently and replace the
+placeholders without printing real values into shell history or logs:
+
+```bash
+git clone https://github.com/atongrun/agent-bus.git
+cd agent-bus
+
+install -d -m 700 ~/.config/agent-bus
+install -m 600 /dev/null ~/.config/agent-bus/server.docker.env
+${EDITOR:-vi} ~/.config/agent-bus/server.docker.env
+```
+
+The file must contain the per-agent token mapping. Bootstrap remains disabled
+unless its secret is explicitly added:
+
+```text
+AGENT_BUS_AGENT_TOKENS=sender=<sender-token>,receiver=<receiver-token>
+# AGENT_BUS_BOOTSTRAP_SECRET=<random-bootstrap-secret>
+```
+
+Do not copy this file into the checkout, pass secrets as Docker build arguments,
+or commit it. Compose fails before starting when `AGENT_BUS_AGENT_TOKENS` is
+missing. Start the service and verify its health:
+
+```bash
+docker compose --env-file ~/.config/agent-bus/server.docker.env up -d --build
+docker compose --env-file ~/.config/agent-bus/server.docker.env ps
+docker compose --env-file ~/.config/agent-bus/server.docker.env logs --tail 50 agent-bus
+curl http://127.0.0.1:8800/health
+```
+
+The health response must contain `"status":"ok"`. Normal operations are:
+
+```bash
+docker compose --env-file ~/.config/agent-bus/server.docker.env logs -f agent-bus
+docker compose --env-file ~/.config/agent-bus/server.docker.env stop
+docker compose --env-file ~/.config/agent-bus/server.docker.env start
+docker compose --env-file ~/.config/agent-bus/server.docker.env down
+```
+
+`docker compose down` removes the container and network but preserves the named
+volume. Do not use `docker compose down -v` unless you intentionally want to
+delete the durable event database.
+
+#### Docker Data Backup And Restore
+
+Take a cold backup before every upgrade. Stopping the service first ensures the
+SQLite database and its WAL files form one consistent snapshot:
+
+```bash
+mkdir -m 700 agent-bus-backup
+docker compose --env-file ~/.config/agent-bus/server.docker.env stop agent-bus
+docker run --rm \
+  -v agent-bus-data:/data:ro \
+  -v "$PWD/agent-bus-backup:/backup" \
+  alpine:3.20 \
+  tar -C /data -czf /backup/agent-bus-data.tgz .
+docker compose --env-file ~/.config/agent-bus/server.docker.env start agent-bus
+```
+
+Keep `~/.config/agent-bus/server.docker.env` in the same protected backup system, but never
+put it inside the database archive or repository. To restore, first preserve the
+current volume separately, stop the service, and then replace the volume
+contents from a trusted backup:
+
+```bash
+docker compose --env-file ~/.config/agent-bus/server.docker.env stop agent-bus
+docker run --rm \
+  -v agent-bus-data:/data \
+  alpine:3.20 \
+  sh -c 'find /data -mindepth 1 -delete'
+docker run --rm \
+  -v agent-bus-data:/data \
+  -v "$PWD/agent-bus-backup:/backup:ro" \
+  alpine:3.20 \
+  tar -C /data -xzf /backup/agent-bus-data.tgz
+docker compose --env-file ~/.config/agent-bus/server.docker.env start agent-bus
+curl http://127.0.0.1:8800/health
+```
+
+#### Docker Upgrade And Rollback
+
+Back up both the named volume and protected environment file before changing
+versions. Build from an explicit release tag so rollback remains auditable:
+
+```bash
+git fetch --tags
+git checkout <new-release-tag>
+docker compose --env-file ~/.config/agent-bus/server.docker.env build --pull
+docker compose --env-file ~/.config/agent-bus/server.docker.env up -d
+curl http://127.0.0.1:8800/health
+```
+
+Then complete the event loop below before declaring the upgrade ready. To roll
+back the application, check out the previous release tag and rebuild. If the
+failed upgrade changed durable data incompatibly, stop the service and restore
+the pre-upgrade volume snapshot before starting the previous image. Never infer
+database compatibility from a successful container start alone.
+
+#### Docker Deployment Acceptance
+
+Configure sender and receiver client contexts against this server, then prove
+the durable path rather than relying on container status alone:
+
+1. Run `agent-bus doctor` from both clients.
+2. Send a unique event with the sender token.
+3. Query `pending` with the recipient token and record the event ID.
+4. Recreate the container with `docker compose --env-file
+   ~/.config/agent-bus/server.docker.env up -d --force-recreate`, query `pending` again, and
+   confirm the same event ID survived in the named volume.
+5. ACK that ID with the recipient token.
+6. Query `pending` again and confirm it is empty.
+
+The container includes only Agent Bus Core. Local Worker Runtime processes,
+listener supervision, Tailscale, TLS termination, and reverse proxies remain
+outside it.
 
 ### Recommended VPS Network Boundary: Tailscale
 
@@ -73,6 +205,22 @@ not treat public-IP `8800/tcp` failure as a deployment failure when the
 Tailscale URL works.
 
 Use the Tailscale URL as the `--server` value when creating client contexts.
+
+The Compose deployment binds to `127.0.0.1` by default. To publish directly on
+the VPS Tailscale address, add the following non-secret value to the protected
+Docker environment file and recreate the service:
+
+```text
+AGENT_BUS_BIND_ADDRESS=<vps-tailscale-ip>
+```
+
+```bash
+docker compose --env-file ~/.config/agent-bus/server.docker.env up -d
+curl http://<vps-tailscale-ip>:8800/health
+```
+
+Do not set `AGENT_BUS_BIND_ADDRESS=0.0.0.0` unless an independently verified
+firewall or private network boundary prevents public access.
 
 One concrete production path can look like this:
 

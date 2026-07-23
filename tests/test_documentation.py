@@ -47,5 +47,36 @@ class BootstrapDocumentationTests(unittest.TestCase):
         self.assertIn("receiver.credentials.env", guide)
 
 
+class DockerDocumentationTests(unittest.TestCase):
+    def test_readme_links_to_the_short_docker_path(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("docker compose --env-file", readme)
+        self.assertIn("Docker server instructions", readme)
+        self.assertIn("The existing systemd installer remains supported", readme)
+        self.assertNotIn("AGENT_BUS_AGENT_TOKENS=architect=change-me", readme)
+
+    def test_installation_guide_covers_docker_lifecycle_and_boundaries(self):
+        guide = (ROOT / "docs/guide/installation.md").read_text(encoding="utf-8")
+
+        for required in (
+            "### Docker Compose Server",
+            "agent-bus-data",
+            "Do not use `docker compose down -v`",
+            "#### Docker Data Backup And Restore",
+            "#### Docker Upgrade And Rollback",
+            "#### Docker Deployment Acceptance",
+            "AGENT_BUS_BIND_ADDRESS=<vps-tailscale-ip>",
+            "Send a unique event",
+            "Query `pending` again and confirm it is empty",
+        ):
+            self.assertIn(required, guide)
+
+        self.assertIn("outside the repository", guide)
+        self.assertIn("pass secrets as Docker build arguments", guide)
+        self.assertIn("install -m 600 /dev/null ~/.config/agent-bus/server.docker.env", guide)
+        self.assertIn("listener supervision", guide)
+
+
 if __name__ == "__main__":
     unittest.main()

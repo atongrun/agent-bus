@@ -63,7 +63,7 @@ deduplication.
 This walkthrough verifies Agent Bus Core with an `echo` handler. It does not
 require OpenCode or another AI runtime.
 
-The current server installer creates two agent identities named `architect`
+The current systemd server installer creates two agent identities named `architect`
 and `coder`. In this walkthrough, `architect` is the sender and `coder` is the
 receiver. These names are installer defaults, not hardcoded protocol roles.
 
@@ -99,6 +99,25 @@ curl http://127.0.0.1:8800/health
 ```
 
 The health response must contain `"status":"ok"`.
+
+Docker Compose is also supported as an alternative server deployment. For a
+new Docker deployment, use this path instead of running `scripts/install.sh`.
+It keeps SQLite in a persistent named volume and binds to localhost by default:
+
+```bash
+git clone https://github.com/atongrun/agent-bus.git
+cd agent-bus
+install -d -m 700 ~/.config/agent-bus
+install -m 600 /dev/null ~/.config/agent-bus/server.docker.env
+# Add AGENT_BUS_AGENT_TOKENS=architect=<token>,coder=<token> to that file.
+docker compose --env-file ~/.config/agent-bus/server.docker.env up -d --build
+curl http://127.0.0.1:8800/health
+```
+
+Do not commit `server.docker.env`. For Tailscale binding, backup/restore, upgrades, and
+the full deployment verification loop, follow the
+[Docker server instructions](docs/guide/installation.md#docker-compose-server).
+The existing systemd installer remains supported.
 
 ### 2. Install the CLI on Each Client
 
@@ -307,7 +326,7 @@ remain available for CI and compatibility use.
 
 | Document | Use it for |
 | --- | --- |
-| [Installation and security](docs/guide/installation.md) | Server networking, token provisioning, bootstrap, Windows ACLs, and compatibility setup |
+| [Installation and security](docs/guide/installation.md) | systemd and Docker server deployment, persistence, networking, token provisioning, bootstrap, Windows ACLs, and compatibility setup |
 | [Worker Runtime](docs/worker.md) | Designing the adapter that invokes local tools and reports results |
 | [Product positioning](docs/product-positioning.md) | Understanding the boundary between the relay, adapters, and workflow systems |
 | [Recommended practices](docs/recommended-practices.md) | Operating the current lightweight deployment and deciding when to add infrastructure |
