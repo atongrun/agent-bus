@@ -598,8 +598,14 @@
       wrapper.addEventListener("toggle", () => {
         if (wrapper.open) {
           state.expandedPayloadIds.add(eventId);
+          elements.refreshLabel.textContent =
+            "Auto-refresh paused while a payload is open";
         } else {
           state.expandedPayloadIds.delete(eventId);
+          if (state.expandedPayloadIds.size === 0) {
+            elements.refreshLabel.textContent = "Refreshing…";
+            loadEvents();
+          }
         }
       });
       summary.textContent = label;
@@ -747,7 +753,11 @@
     }
 
     setInterval(() => {
-      if (document.visibilityState === "visible" && !state.olderLoaded) {
+      if (
+        document.visibilityState === "visible"
+        && !state.olderLoaded
+        && state.expandedPayloadIds.size === 0
+      ) {
         loadEvents();
       }
     }, 5000);

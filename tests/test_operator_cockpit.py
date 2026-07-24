@@ -245,6 +245,12 @@ class OperatorCockpitTests(unittest.TestCase):
             'details("View raw", JSON.stringify(event.payload, null, 2), event.id)',
             response.text,
         )
+        self.assertIn(
+            "Auto-refresh paused while a payload is open",
+            response.text,
+        )
+        self.assertIn("state.expandedPayloadIds.size === 0", response.text)
+        self.assertIn('elements.refreshLabel.textContent = "Refreshing…"', response.text)
 
 
 if __name__ == "__main__":
