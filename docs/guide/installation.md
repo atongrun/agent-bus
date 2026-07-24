@@ -261,10 +261,47 @@ Complete one event loop before declaring the deployment ready:
 3. ACK the event with the recipient agent token.
 4. Query `pending` again and confirm it is empty.
 
-## Native Client Contexts
+## Guided Client Installation
 
-Install the CLI, obtain the matching agent token, then create a named context.
-Contexts contain only a server URL, an agent identity, and a credential
+Agent Bus is not on PyPI yet. Install
+[uv](https://docs.astral.sh/uv/getting-started/installation/), then use the
+same commands on macOS, Linux, or Windows:
+
+```console
+git clone https://github.com/atongrun/agent-bus.git
+cd agent-bus
+uv tool install --python 3.12 .
+agent-bus setup
+```
+
+After Agent Bus is published to PyPI, replace the clone, `cd`, and local
+install steps with `uv tool install agent-bus`. `pipx install agent-bus` will
+remain a supported alternative for users who already manage Python with pipx.
+
+`agent-bus setup` prompts for:
+
+- the Agent Bus server URL, normally the VPS Tailscale URL;
+- the agent identity, such as `architect` or `coder`; and
+- the matching token printed by the server installer.
+
+It writes the token to a private platform-native credential file, creates and
+selects a named context, and runs the same connectivity and credential checks
+as `agent-bus doctor`. `uv` owns the isolated tool environment and can provide
+Python 3.12 when the machine does not already have it.
+
+Rerunning `agent-bus setup` reuses the existing protected credential unless
+`AGENT_BUS_CLIENT_TOKEN` is explicitly supplied. For non-interactive setup,
+set `AGENT_BUS_SERVER`, `AGENT_BUS_AGENT`, and `AGENT_BUS_CLIENT_TOKEN`. Use
+`--name` for a custom context name and `--no-verify` only when the server is
+intentionally unavailable.
+
+Agent Bus does not modify global Python packages, system proxy settings, shell
+profiles, or a local AI runtime.
+
+## Manual Client Configuration
+
+The remaining steps document manual and automated provisioning. A native
+context contains only a server URL, an agent identity, and a credential
 reference.
 
 ### Obtaining a Client Token
@@ -381,7 +418,9 @@ in an owner-only credential file outside any repository, for example
 current-user-only ACL on Windows. Then reference it without copying the value:
 
 ```bash
-pip install agent-bus
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install .
 
 agent-bus context add sender \
   --server http://<vps-tailscale-ip>:8800 \

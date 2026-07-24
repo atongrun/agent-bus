@@ -206,6 +206,56 @@ def _atomic_write_private(path: Path, content: str) -> None:
             temporary_path.unlink()
 
 
+def write_credential_file(path: Path, token: str) -> None:
+    """Write one client token to a private dotenv file.
+
+    JSON string quoting is compatible with python-dotenv and preserves values
+    containing spaces, ``#``, quotes, or backslashes without shell evaluation.
+    """
+    if not isinstance(token, str) or not token:
+        raise ContextError("token must not be empty")
+    if "\x00" in token or "\r" in token or "\n" in token:
+        raise ContextError("token must not contain NUL or line breaks")
+
+    path = path.expanduser()
+    if path.is_symlink():
+        raise ContextError(f"refusing to replace symlinked credential file: {path}")
+    _atomic_write_private(
+        path,
+        f"AGENT_BUS_CLIENT_TOKEN={json.dumps(token, ensure_ascii=True)}\n",
+    )
+
+
+def protect_credential_file(path: Path) -> None:
+    """Fail closed on unsafe credential targets and restore private permissions."""
+    path = path.expanduser()
+    if path.is_symlink():
+        raise ContextError(f"refusing to use symlinked credential file: {path}")
+    if not path.is_file():
+        raise ContextError(f"credential path is not a regular file: {path}")
+    _make_private(path)
+
+
+def validate_context_configuration(
+    name: str,
+    *,
+    server: str,
+    agent: str,
+    token_env: str,
+    env_file: str | None = None,
+) -> dict:
+    """Validate a context and its filename before any filesystem writes."""
+    validate_context_name(name)
+    return _validate_context(
+        {
+            "version": 1,
+            "server": server,
+            "agent": agent,
+            "credential": _credential_reference(token_env, env_file),
+        }
+    )
+
+
 class ContextStore:
     """Read and write named contexts beneath one platform config root."""
 
@@ -232,13 +282,12 @@ class ContextStore:
             raise ContextError(
                 f"context '{name}' already exists; use --force to replace it"
             )
-        context = _validate_context(
-            {
-                "version": 1,
-                "server": server,
-                "agent": agent,
-                "credential": _credential_reference(token_env, env_file),
-            }
+        context = validate_context_configuration(
+            name,
+            server=server,
+            agent=agent,
+            token_env=token_env,
+            env_file=env_file,
         )
         _atomic_write_private(path, json.dumps(context, indent=2) + "\n")
         return context
