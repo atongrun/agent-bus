@@ -27,8 +27,8 @@ adding heavier queue or workflow infrastructure.
 4. **Second-level responsiveness**: normal delivery should be fast, but
    millisecond latency is not a goal.
 5. **Secure by default**: per-agent tokens are preferred over a shared token.
-6. **CLI-first integration**: agents and humans can inspect and recover state
-   without a dashboard.
+6. **CLI-first integration**: agents recover state through the CLI; an optional
+   read-only browser page can observe the same durable event history.
 
 ## Current Architecture
 
@@ -134,8 +134,9 @@ non-local deployments, run the service behind Tailscale, HTTPS, a tunnel, or an
 equivalent private transport. Public HTTP on `8800/tcp` is not a recommended
 long-term deployment boundary because tokens would be sent over plaintext.
 
-## v0.2 Non-Goals
+## Early-Version Non-Goals
 
-v0.2 does not include a dashboard, kanban board, workflow DAG, enterprise IAM,
-clustered database, Web UI, or replacement for GitHub issues and pull requests.
-Those belong to future versions after the durable relay is proven.
+Agent Bus does not include an operational dashboard, kanban board, workflow DAG,
+enterprise IAM, clustered database, or replacement for GitHub issues and pull
+requests. The built-in `/operator` page is deliberately narrower: it only reads
+events and cannot send, ACK, fail, requeue, or delete them.

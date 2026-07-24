@@ -244,6 +244,23 @@ curl http://<vps-tailscale-ip>:8800/health
 Do not set `AGENT_BUS_BIND_ADDRESS=0.0.0.0` unless an independently verified
 firewall or private network boundary prevents public access.
 
+To enable the optional read-only cockpit, generate a token that is different
+from every agent token and add it to the protected server environment:
+
+```bash
+python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
+```
+
+```text
+AGENT_BUS_OPERATOR_TOKEN=<generated-token>
+```
+
+Restart or recreate the service, then open
+`http://<vps-tailscale-ip>:8800/operator`. Use `operator` as the HTTP Basic
+username and the generated token as the password. The cockpit displays raw
+event payloads and therefore must remain behind the same private-network
+boundary. Never append this token to the URL.
+
 One concrete production path can look like this:
 
 ```text

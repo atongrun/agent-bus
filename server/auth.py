@@ -5,9 +5,15 @@ import secrets
 from dataclasses import dataclass
 
 from fastapi import Depends, HTTPException, Request
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import (
+    HTTPAuthorizationCredentials,
+    HTTPBasic,
+    HTTPBasicCredentials,
+    HTTPBearer,
+)
 
 security = HTTPBearer(auto_error=False)
+operator_security = HTTPBasic(auto_error=False)
 
 
 @dataclass(frozen=True)
@@ -55,6 +61,11 @@ def get_agent_tokens() -> dict[str, str]:
     return tokens
 
 
+def get_operator_token() -> str | None:
+    """Get the optional read-only cockpit token."""
+    return os.environ.get("AGENT_BUS_OPERATOR_TOKEN", "").strip() or None
+
+
 def _extract_token(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None,
@@ -77,16 +88,51 @@ async def verify_token(
     """
     presented = _extract_token(request, credentials)
     if not presented:
-        raise HTTPException(status_code=401, detail="Invalid or missing authentication token")
+        raise HTTPException(
+            status_code=401, detail="Invalid or missing authentication token"
+        )
+
+    operator_token = get_operator_token()
+    if operator_token and secrets.compare_digest(presented, operator_token):
+        raise HTTPException(
+            status_code=401, detail="Invalid or missing authentication token"
+        )
 
     agent_tokens = get_agent_tokens()
     if agent_tokens:
         for agent, token in agent_tokens.items():
             if secrets.compare_digest(presented, token):
                 return AuthContext(agent=agent, legacy=False)
-        raise HTTPException(status_code=401, detail="Invalid or missing authentication token")
+        raise HTTPException(
+            status_code=401, detail="Invalid or missing authentication token"
+        )
 
     if secrets.compare_digest(presented, get_legacy_token()):
         return AuthContext(agent=None, legacy=True)
 
-    raise HTTPException(status_code=401, detail="Invalid or missing authentication token")
+    raise HTTPException(
+        status_code=401, detail="Invalid or missing authentication token"
+    )
+
+
+async def verify_operator(
+    credentials: HTTPBasicCredentials | None = Depends(operator_security),
+) -> None:
+    """Authenticate the separate read-only operator surface."""
+    configured = get_operator_token()
+    if configured is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    valid = (
+        credentials is not None
+        and secrets.compare_digest(credentials.username, "operator")
+        and secrets.compare_digest(credentials.password, configured)
+    )
+    if not valid:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing operator credentials",
+            headers={
+                "WWW-Authenticate": 'Basic realm="Agent Bus operator", charset="UTF-8"'
+            },
+        )

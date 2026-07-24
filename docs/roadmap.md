@@ -196,6 +196,6 @@ Agent Bus should not spend early product energy on:
 ## Current Product Decision
 
 Near term, Agent Bus should make durable messaging and Worker Adapter examples
-stable. UI, tray app, richer worker state, retry dashboards, and plugin-style
-runtime adapters are valuable later, but they depend on the core relay boundary
-staying small and reliable.
+stable. The built-in UI remains a read-only event observer; tray apps, worker
+presence, retry dashboards, and plugin-style runtime adapters are valuable
+later, but they depend on the core relay boundary staying small and reliable.

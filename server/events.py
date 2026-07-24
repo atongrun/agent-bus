@@ -25,7 +25,7 @@ from server.models import EventCreate, EventFail
 router = APIRouter(prefix="/events", tags=["events"])
 
 
-def _row_to_response(row: dict) -> dict:
+def row_to_event_response(row: dict) -> dict:
     """Convert a database row dict to an API response dict."""
     return {
         "id": row["id"],
@@ -67,7 +67,7 @@ async def create_event(
         event_type=event.type,
         payload_json=payload_json,
     )
-    return _row_to_response(row)
+    return row_to_event_response(row)
 
 
 @router.post("/{event_id}/ack")
@@ -147,7 +147,7 @@ async def list_pending_events(
 ):
     """List un-acked events for an agent without opening an SSE stream."""
     _require_agent(auth, agent, "list pending events")
-    return [_row_to_response(row) for row in get_pending_events(agent)]
+    return [row_to_event_response(row) for row in get_pending_events(agent)]
 
 
 @router.get("/failed")
@@ -158,7 +158,7 @@ async def list_failed_events(
 ):
     """List terminally failed events for an agent."""
     _require_agent(auth, agent, "list failed events")
-    return [_row_to_response(row) for row in get_failed_events(agent)]
+    return [row_to_event_response(row) for row in get_failed_events(agent)]
 
 
 @router.post("/{event_id}/requeue")
@@ -181,7 +181,7 @@ async def requeue_failed_event(
         )
     if updated is None:
         raise HTTPException(status_code=404, detail="Event not found")
-    return _row_to_response(updated)
+    return row_to_event_response(updated)
 
 
 @router.get("/stream")
@@ -211,7 +211,7 @@ async def stream_events(
             row = mark_delivered(row["id"])
             if row is None or row["status"] not in ("pending", "delivered"):
                 continue
-            data = _row_to_response(row)
+            data = row_to_event_response(row)
             yield f"id: {row['id']}\nevent: message\ndata: {json.dumps(data)}\n\n"
 
         # Phase 2: advance past every replayed event without skipping events
@@ -230,7 +230,7 @@ async def stream_events(
                 row = mark_delivered(row["id"])
                 if row is None or row["status"] not in ("pending", "delivered"):
                     continue
-                data = _row_to_response(row)
+                data = row_to_event_response(row)
                 yield f"id: {row['id']}\nevent: message\ndata: {json.dumps(data)}\n\n"
 
             await asyncio.sleep(0.5)

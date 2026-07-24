@@ -121,6 +121,70 @@ def get_failed_events(agent: str) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def get_operator_events(
+    *,
+    status: str | None = None,
+    query: str | None = None,
+    before_id: int | None = None,
+    limit: int = 100,
+) -> tuple[list[dict], bool]:
+    """Read a newest-first page across all identities without changing state."""
+    clauses: list[str] = []
+    params: list[object] = []
+
+    if status is not None:
+        clauses.append("status = ?")
+        params.append(status)
+    if before_id is not None:
+        clauses.append("id < ?")
+        params.append(before_id)
+    if query:
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped}%"
+        searchable_columns = (
+            "CAST(id AS TEXT)",
+            "from_agent",
+            "to_agent",
+            "type",
+            "payload_json",
+            "COALESCE(last_error, '')",
+        )
+        clauses.append(
+            "("
+            + " OR ".join(
+                f"{column} LIKE ? ESCAPE '\\'" for column in searchable_columns
+            )
+            + ")"
+        )
+        params.extend([pattern] * len(searchable_columns))
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(limit + 1)
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""SELECT * FROM events
+                {where}
+                ORDER BY id DESC
+                LIMIT ?""",
+            params,
+        ).fetchall()
+
+    has_more = len(rows) > limit
+    return [dict(row) for row in rows[:limit]], has_more
+
+
+def get_event_status_counts() -> dict[str, int]:
+    """Return global event counts for every durable status."""
+    counts = {"pending": 0, "delivered": 0, "acked": 0, "failed": 0}
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT status, COUNT(*) AS count FROM events GROUP BY status"
+        ).fetchall()
+    for row in rows:
+        counts[row["status"]] = row["count"]
+    return counts
+
+
 def get_max_event_id(agent: str) -> int:
     """Get the maximum event ID for a given agent (any status)."""
     with get_db() as conn:

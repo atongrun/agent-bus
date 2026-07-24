@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from server.bootstrap import router as bootstrap_router
 from server.db import init_db
 from server.events import router as events_router
+from server.operator import router as operator_router
 
 # Load .env file if it exists
 load_dotenv()
@@ -33,6 +34,8 @@ app = FastAPI(
 app.include_router(events_router)
 # Include bootstrap token endpoint
 app.include_router(bootstrap_router)
+# Include the optional, strictly read-only operator cockpit
+app.include_router(operator_router)
 
 
 @app.get("/health")
