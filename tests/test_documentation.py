@@ -87,5 +87,33 @@ class DockerDocumentationTests(unittest.TestCase):
         self.assertIn("listener supervision", guide)
 
 
+class ClientInstallationDocumentationTests(unittest.TestCase):
+    def test_readme_uses_one_cross_platform_client_setup(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("uv tool install --python 3.12 .", readme)
+        self.assertIn("uv tool install agent-bus", readme)
+        self.assertIn("agent-bus setup", readme)
+        self.assertIn("identical on macOS, Linux, and Windows", readme)
+        self.assertIn("listen --once --ack-on-receive", readme)
+        self.assertNotIn("install-client.sh", readme)
+        self.assertNotIn("install-client.ps1", readme)
+        self.assertNotIn("On Windows PowerShell", readme)
+        self.assertNotIn("### 2. Configure Two Clients", readme)
+        self.assertNotIn("context add architect", readme)
+        self.assertNotIn("context add coder", readme)
+
+    def test_installation_guide_leads_with_guided_client_setup(self):
+        guide = (ROOT / "docs/guide/installation.md").read_text(encoding="utf-8")
+
+        self.assertIn("## Guided Client Installation", guide)
+        self.assertIn("uv tool install --python 3.12 .", guide)
+        self.assertIn("uv tool install agent-bus", guide)
+        self.assertIn("pipx install agent-bus", guide)
+        self.assertIn("agent-bus setup", guide)
+        self.assertIn("## Manual Client Configuration", guide)
+        self.assertNotIn("pip install agent-bus", guide)
+
+
 if __name__ == "__main__":
     unittest.main()

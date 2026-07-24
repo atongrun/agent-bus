@@ -93,42 +93,60 @@ For logs, backup and restore, upgrades, rollback, custom identities, and manual
 installation, see the
 [installation and security guide](docs/guide/installation.md).
 
-### 2. Configure Two Clients
+### 2. Install the Clients
 
-Install the CLI on the sender and receiver, store each printed token in its own
-protected credential file, and create the `architect` and `coder` contexts.
-The [client setup guide](docs/guide/installation.md#native-client-contexts)
-contains the macOS, Linux, and Windows commands.
+Agent Bus is not on PyPI yet. For this unreleased version, install the client
+from the repository with [uv](https://docs.astral.sh/uv/):
 
-Run `agent-bus doctor` on both clients before continuing.
+```console
+git clone https://github.com/atongrun/agent-bus.git
+cd agent-bus
+uv tool install --python 3.12 .
+agent-bus setup
+```
+
+These commands are identical on macOS, Linux, and Windows. `uv` provides an
+isolated Python environment; `agent-bus setup` prompts for the server URL,
+agent name, and token, protects the credential using platform-native
+permissions, creates and selects the context, and verifies it against the
+server.
+
+After the first PyPI release, the source checkout and `cd` step become:
+
+```console
+uv tool install agent-bus
+agent-bus setup
+```
+
+Use `architect` on the sending machine and `coder` on the receiving machine.
+For non-interactive installation, custom context names, or manual credential
+provisioning, see the
+[client installation guide](docs/guide/installation.md#guided-client-installation).
 
 ### 3. Verify the Event Loop
 
-Start an `echo` listener on the receiver:
+On the receiving machine, wait for one event and ACK it after printing:
 
-```bash
-agent-bus --context coder listen --on task:new "echo {payload.prompt}"
+```console
+agent-bus --context coder listen --once --ack-on-receive
 ```
 
-Send one event from the sender:
+On the sending machine, send one event:
 
-```bash
-agent-bus --context architect send \
-  --to coder \
-  --type task:new \
-  --payload '{"task_id":"quickstart-001","prompt":"Hello from Agent Bus"}'
+```console
+agent-bus --context architect send --to coder --type task:new --payload '{"task_id":"quickstart-001","prompt":"Hello from Agent Bus"}'
 ```
 
-The receiver should print the event, echo the prompt, and ACK it. Stop the
-listener with Ctrl+C, then confirm its durable inbox is empty:
+The receiver should print and ACK the event, then exit. Confirm its durable
+inbox is empty:
 
-```bash
-agent-bus --context coder pending
+```console
+agent-bus --context coder pending --count
 ```
 
-An empty JSON array (`[]`) proves the `send → receive → handler → ACK` path.
-Production adapters still need their own workspace, idempotency, and local tool
-policies; those concerns remain outside Agent Bus Core.
+Expected output: `0`. This proves SSE delivery, ACK, and durable queue cleanup.
+In production, omit `--ack-on-receive`: configured handlers ACK only after
+successful execution.
 
 ## Production Deployment
 

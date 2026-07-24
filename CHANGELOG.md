@@ -13,12 +13,14 @@ GitHub.
   installer that generates protected per-agent tokens on first use.
 - Automated Docker acceptance covering installation, health, durable event
   delivery, container recreation, ACK, and queue cleanup.
+- A cross-platform `agent-bus setup` command that protects the agent
+  credential, configures a native context, and verifies it with `doctor`.
 
 ### Changed
 
 - The README now presents Docker and systemd as equal one-command deployment
-  choices and keeps platform-specific setup and operations in the installation
-  guide.
+  choices, uses the same uv-managed client setup on macOS, Linux, and Windows,
+  and keeps manual setup in the installation guide.
 
 ## [0.2.0] - 2026-07-17
 

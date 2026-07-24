@@ -18,7 +18,10 @@ from client.context_config import (
     ContextStore,
     RuntimeConfig,
     default_context_root,
+    protect_credential_file,
     resolve_runtime_config,
+    validate_context_configuration,
+    write_credential_file,
 )
 
 from client.listener_config import (
@@ -266,6 +269,99 @@ def _credential_label(context: dict) -> str:
     if credential["type"] == "env":
         return f"env:{credential['name']}"
     return f"env-file:{credential['path']}#{credential['key']}"
+
+
+@cli.command("setup")
+@click.option(
+    "--server",
+    envvar="AGENT_BUS_SERVER",
+    help="Agent Bus server URL (or AGENT_BUS_SERVER)",
+)
+@click.option(
+    "--agent",
+    envvar="AGENT_BUS_AGENT",
+    help="Agent identity (or AGENT_BUS_AGENT)",
+)
+@click.option(
+    "--name",
+    "context_name",
+    default=None,
+    help="Context name (defaults to the agent identity)",
+)
+@click.option(
+    "--verify/--no-verify",
+    default=True,
+    show_default=True,
+    help="Run connectivity and credential checks after setup",
+)
+@click.pass_context
+def setup_client(ctx, server, agent, context_name, verify):
+    """Interactively configure this Mac, Linux, or Windows client."""
+    server = server or click.prompt(
+        "Agent Bus server URL (for example http://100.x.y.z:8800)"
+    )
+    agent = agent or click.prompt("Agent name (for example architect or coder)")
+    context_name = context_name or agent
+
+    store = ctx.obj["context_store"]
+    credential_path = store.root / f"{context_name}.credentials.env"
+    token = os.environ.get("AGENT_BUS_CLIENT_TOKEN")
+
+    try:
+        validate_context_configuration(
+            context_name,
+            server=server,
+            agent=agent,
+            token_env="AGENT_BUS_CLIENT_TOKEN",
+            env_file=os.fspath(credential_path),
+        )
+        if credential_path.exists() and token is None:
+            protect_credential_file(credential_path)
+            click.echo(f"Reusing protected credential: {credential_path}")
+        else:
+            token = token or click.prompt(
+                f"Token for {agent}",
+                hide_input=True,
+                confirmation_prompt=False,
+            )
+            write_credential_file(credential_path, token)
+            click.echo(f"Protected credential written: {credential_path}")
+
+        store.add(
+            context_name,
+            server=server,
+            agent=agent,
+            token_env="AGENT_BUS_CLIENT_TOKEN",
+            env_file=os.fspath(credential_path),
+            force=True,
+        )
+        store.use(context_name)
+    except (ContextError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    click.echo(f"Current context: {context_name}")
+    if not verify:
+        click.echo("Client setup complete. Run 'agent-bus doctor' when the server is ready.")
+        return
+
+    # Verify the context just written, independent of legacy AGENT_BUS_URL,
+    # AGENT_BUS_TOKEN, or AGENT_BUS_AGENT values in the caller's environment.
+    try:
+        config = resolve_runtime_config(
+            context_name=context_name,
+            env={},
+            root=store.root,
+        )
+    except ContextError as exc:
+        raise click.ClickException(str(exc)) from exc
+    ctx.obj["config_inputs"] = {
+        "cli_url": config.url,
+        "cli_token": config.token,
+        "context_name": context_name,
+        "root": store.root,
+    }
+    click.echo("Checking server and agent credentials:")
+    ctx.invoke(doctor, agent=config.agent, send_test=False, listener=False)
 
 
 @cli.group("context")
