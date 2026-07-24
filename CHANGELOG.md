@@ -15,6 +15,8 @@ GitHub.
   delivery, container recreation, ACK, and queue cleanup.
 - A cross-platform `agent-bus setup` command that protects the agent
   credential, configures a native context, and verifies it with `doctor`.
+- An optional, single-page `/operator` cockpit for fast read-only inspection of
+  all identities, durable states, retry evidence, and raw event payloads.
 
 ### Changed
 

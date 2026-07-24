@@ -161,6 +161,25 @@ provisioning credential. Firewall setup, bootstrap provisioning, POSIX atomic
 writes, Windows ACLs, and legacy `listener.env` compatibility are documented in
 the [installation and security guide](docs/guide/installation.md).
 
+### Read-Only Event Cockpit
+
+The server includes an optional single-page observer at `/operator`. It shows
+events across all identities and durable states, including raw payloads, retry
+counts, and last errors. It has no send, ACK, failure, requeue, or delete
+controls, and reading it never changes event state.
+
+Enable it with a unique token that is not used by any agent:
+
+```text
+AGENT_BUS_OPERATOR_TOKEN=<unique-random-token>
+```
+
+Restart the server, open `http://<private-host>:8800/operator`, and use
+`operator` as the HTTP Basic username with the configured token as the
+password. The route returns `404` while the variable is unset. Keep it on
+localhost, Tailscale, or another trusted private transport; do not put the token
+in a URL.
+
 ## Connecting a Local AI Runtime
 
 A local runtime normally performs this sequence:

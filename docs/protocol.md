@@ -189,3 +189,17 @@ competing-consumer coordination.
 - `404`: event not found
 - `409`: state transition conflicts with the event's current state or observed attempt
 - `422`: request validation error
+
+## Read-Only Operator Surface
+
+`GET /operator` serves the optional browser observer. Its data endpoint is
+`GET /operator/api/events`, with optional `status`, `q`, `before_id`, and
+`limit` parameters. It reads all identities and includes ACKed history and raw
+payloads, but it does not participate in delivery and never changes event
+state.
+
+This namespace uses a separate `AGENT_BUS_OPERATOR_TOKEN` through HTTP Basic
+authentication. The username is `operator`. Operator credentials are not
+accepted by the event write API, and agent, legacy, and bootstrap credentials
+are not accepted by the operator namespace. The namespace returns `404` when
+the operator token is unset.
