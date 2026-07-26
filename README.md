@@ -95,8 +95,8 @@ installation, see the
 
 ### 2. Install the Clients
 
-Agent Bus is not on PyPI yet. For this unreleased version, install the client
-from the repository with [uv](https://docs.astral.sh/uv/):
+Agent Bus is not published on PyPI. Install the v0.3.0 client from the
+repository with [uv](https://docs.astral.sh/uv/):
 
 ```console
 git clone https://github.com/atongrun/agent-bus.git
