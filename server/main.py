@@ -26,7 +26,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Agent Bus",
     description="Cross-machine durable event relay for AI agent collaboration",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
