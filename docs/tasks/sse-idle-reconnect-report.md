@@ -23,8 +23,14 @@
 - CI-equivalent Ruff selection (`E4,E7,E9,F`): passed.
 - Ruff formatter for both changed Python files: passed.
 - Python bytecode compilation and `git diff --check`: passed.
+- Fresh Windows exact-head checkout: the two new reconnect tests passed; CI-equivalent Ruff,
+  changed-file formatter, bytecode compilation, diff, SHA, and clean-tree gates passed.
+- Windows full diagnostic: 96 tests passed, one skipped, and 10 subtests passed. Fourteen existing
+  Windows-incompatible tests failed in the same setup/context, POSIX executable/quoting, Docker/Bash,
+  listener diagnostic, SQLite cleanup, and poison-handler path areas already documented on the prior
+  Agent Bus head; neither new reconnect test failed.
 
-Pending fresh Windows exact-head verification, GitHub CI, independent Codex review, and main-agent
+Pending final report-only SHA refresh on Windows, GitHub CI, independent Codex review, and main-agent
 double-check.
 
 ## Known Baseline Noise
