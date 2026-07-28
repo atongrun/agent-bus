@@ -23,7 +23,6 @@ from client.context_config import (
     validate_context_configuration,
     write_credential_file,
 )
-
 from client.listener_config import (
     default_config_path,
     listener_environment_issues,
@@ -33,6 +32,8 @@ from client.listener_config import (
     warm_network_path,
     write_listener_env,
 )
+
+DEFAULT_LISTEN_READ_TIMEOUT_SECONDS = 60
 
 
 def get_config():
@@ -1048,9 +1049,12 @@ def listen(
         ack_on_receive = legacy_ack
 
     handler_map = dict(handlers)
-    timeout_config = (
-        httpx.Timeout(float(exit_after_idle), connect=30.0) if exit_after_idle else None
+    stream_read_timeout = (
+        float(exit_after_idle)
+        if exit_after_idle
+        else DEFAULT_LISTEN_READ_TIMEOUT_SECONDS
     )
+    timeout_config = httpx.Timeout(stream_read_timeout, connect=30.0)
     shutdown_requested = False
     url = f"{config.url}/events/stream?agent={agent}"
     headers = {
@@ -1233,9 +1237,18 @@ def listen(
                             buffer = line[5:].strip()
                         # else: comment or unknown field, ignore
 
-        except httpx.ReadTimeout:
-            click.echo(f"No events received for {exit_after_idle}s; exiting.")
-            return
+        except httpx.ReadTimeout as e:
+            if exit_after_idle is not None:
+                click.echo(f"No events received for {exit_after_idle}s; exiting.")
+                return
+            click.echo(
+                "Stream idle/read timeout after "
+                f"{DEFAULT_LISTEN_READ_TIMEOUT_SECONDS}s: {e}. "
+                f"Reconnecting in {retry_delay}s...",
+                err=True,
+            )
+            time.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, max_retry_delay)
         except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError) as e:
             click.echo(
                 f"Connection lost: {e}. Reconnecting in {retry_delay}s...", err=True

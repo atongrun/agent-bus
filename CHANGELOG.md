@@ -8,6 +8,9 @@ GitHub.
 
 ### Changed
 
+- Daemon listeners now reconnect after a bounded idle read timeout so unacknowledged
+  `delivered` events are replayed when a stale SSE connection silently loses a frame.
+  Explicit `--exit-after-idle` listeners keep their existing exit behavior.
 - Handler-driven listeners redact payloads for event types without a matching
   handler while leaving those events unacknowledged and replayable. Manual
   listeners and explicit `--ack-on-receive` inspection remain unchanged.
