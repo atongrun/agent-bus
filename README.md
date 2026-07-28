@@ -245,6 +245,7 @@ remain available for CI and compatibility use.
 | [Worker Runtime](docs/worker.md) | Designing the adapter that invokes local tools and reports results |
 | [Product positioning](docs/product-positioning.md) | Understanding the boundary between the relay, adapters, and workflow systems |
 | [Recommended practices](docs/recommended-practices.md) | Operating the current lightweight deployment and deciding when to add infrastructure |
+| [Repository handoff](HANDOFF.md) | Current operational evidence, proven limitations, and the next evidence-driven work |
 | [Protocol](docs/protocol.md) | Event fields, delivery semantics, event conventions, and API endpoints |
 | [Roadmap](docs/roadmap.md) | Current limitations and staged future work |
 | [Design](docs/design.md) | Architecture, SQLite/SSE choices, and the security model |
