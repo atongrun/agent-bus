@@ -341,7 +341,9 @@ def setup_client(ctx, server, agent, context_name, verify):
 
     click.echo(f"Current context: {context_name}")
     if not verify:
-        click.echo("Client setup complete. Run 'agent-bus doctor' when the server is ready.")
+        click.echo(
+            "Client setup complete. Run 'agent-bus doctor' when the server is ready."
+        )
         return
 
     # Verify the context just written, independent of legacy AGENT_BUS_URL,
@@ -1096,22 +1098,32 @@ def listen(
             click.echo("")
             return True
 
+        handler = handler_map.get(event_data["type"])
+        redact_unmatched_payload = (
+            bool(handler_map) and handler is None and not ack_on_receive
+        )
+
         # Timestamp for display
         now = datetime.now(timezone.utc).strftime("%H:%M:%S")
-        payload = event_data.get("payload", {})
-        task_id = payload.get("task_id") if isinstance(payload, dict) else None
+        if redact_unmatched_payload:
+            task_id = None
+        else:
+            payload = event_data.get("payload", {})
+            task_id = payload.get("task_id") if isinstance(payload, dict) else None
 
         click.echo(
             f"[{now}] {event_data['type']} id={event_id} task_id={task_id or '-'}"
         )
         click.echo(f"  From: {event_data['from_agent']} → To: {event_data['to_agent']}")
         click.echo(f"  Status: {event_data['status']}")
-        click.echo(
-            f"  Payload: {json.dumps(event_data['payload'], ensure_ascii=False)}"
-        )
+        if redact_unmatched_payload:
+            click.echo("  Payload: [redacted: no matching handler]")
+        else:
+            click.echo(
+                f"  Payload: {json.dumps(event_data['payload'], ensure_ascii=False)}"
+            )
         click.echo("")
 
-        handler = handler_map.get(event_data["type"])
         should_ack = False
 
         def record_handler_failure(error: str) -> None:

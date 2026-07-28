@@ -6,6 +6,12 @@ GitHub.
 
 ## [Unreleased]
 
+### Changed
+
+- Handler-driven listeners redact payloads for event types without a matching
+  handler while leaving those events unacknowledged and replayable. Manual
+  listeners and explicit `--ack-on-receive` inspection remain unchanged.
+
 ## [0.3.0] - 2026-07-26
 
 ### Added
