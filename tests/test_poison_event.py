@@ -366,6 +366,131 @@ class PoisonEventTests(unittest.TestCase):
         self.assertNotIn("terminal failed", result.output)
 
 
+class ListenIdleReconnectTests(unittest.TestCase):
+    def test_default_daemon_reconnects_and_replays_unacked_event_once(self):
+        """A same-stream high-water mark cannot see old delivered rows; reconnect can."""
+        from unittest.mock import MagicMock
+
+        task_event = {
+            **POISON_EVENT,
+            "id": 501,
+            "type": "task:new",
+            "status": "delivered",
+            "payload": {"task_id": "replay-after-idle"},
+        }
+        shutdown_event = {
+            **POISON_EVENT,
+            "id": 502,
+            "type": "control:shutdown",
+            "status": "pending",
+            "payload": {"target": "coder"},
+        }
+
+        class TimeoutThenReplayClient:
+            connects = 0
+
+            def __init__(self, *args, **kwargs):
+                self.status_code = 200
+                self.timeout = kwargs.get("timeout")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def stream(self, method, url, **kwargs):
+                TimeoutThenReplayClient.connects += 1
+                if TimeoutThenReplayClient.connects == 1:
+                    return self
+                return _FakeStreamResponse(
+                    _sse_lines_for(task_event) + _sse_lines_for(shutdown_event)
+                )
+
+            def iter_lines(self):
+                raise httpx.ReadTimeout("stale same-stream idle")
+
+        ack_mock = MagicMock(return_value=True)
+        handler_mock = MagicMock(return_value=True)
+
+        runner = CliRunner()
+        with (
+            mock.patch("client.cli.httpx.Client", TimeoutThenReplayClient),
+            mock.patch("client.cli._post_ack", ack_mock),
+            mock.patch("client.cli._post_fail") as fail_mock,
+            mock.patch("client.cli.run_handler", handler_mock),
+            mock.patch("client.cli.time.sleep", return_value=None) as sleep_mock,
+        ):
+            result = runner.invoke(
+                cli,
+                [
+                    "--url",
+                    "http://fake",
+                    "--token",
+                    "x",
+                    "listen",
+                    "--agent",
+                    "coder",
+                    "--handler-timeout",
+                    "5",
+                    "--on",
+                    "task:new",
+                    "echo {payload.task_id}",
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertEqual(TimeoutThenReplayClient.connects, 2)
+        self.assertIn("Stream idle/read timeout after 60s", result.output)
+        sleep_mock.assert_called_once_with(1)
+        fail_mock.assert_not_called()
+        handler_mock.assert_called_once()
+        self.assertEqual(ack_mock.call_count, 2)
+
+    def test_explicit_exit_after_idle_still_exits_on_read_timeout(self):
+        class AlwaysTimeoutClient:
+            connects = 0
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def stream(self, method, url, **kwargs):
+                AlwaysTimeoutClient.connects += 1
+                raise httpx.ReadTimeout("idle")
+
+        runner = CliRunner()
+        with (
+            mock.patch("client.cli.httpx.Client", AlwaysTimeoutClient),
+            mock.patch("client.cli.time.sleep", return_value=None) as sleep_mock,
+        ):
+            result = runner.invoke(
+                cli,
+                [
+                    "--url",
+                    "http://fake",
+                    "--token",
+                    "x",
+                    "listen",
+                    "--agent",
+                    "coder",
+                    "--exit-after-idle",
+                    "7",
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertEqual(AlwaysTimeoutClient.connects, 1)
+        self.assertIn("No events received for 7s; exiting.", result.output)
+        self.assertNotIn("Reconnecting", result.output)
+        sleep_mock.assert_not_called()
+
+
 class UnmatchedPayloadRedactionTests(unittest.TestCase):
     def invoke_listener(self, *, handlers=True, ack_on_receive=False):
         payload_reads = []
