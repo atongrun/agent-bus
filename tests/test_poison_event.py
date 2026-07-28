@@ -366,5 +366,113 @@ class PoisonEventTests(unittest.TestCase):
         self.assertNotIn("terminal failed", result.output)
 
 
+class UnmatchedPayloadRedactionTests(unittest.TestCase):
+    def invoke_listener(self, *, handlers=True, ack_on_receive=False):
+        payload_reads = []
+
+        class ObservedPayload(dict):
+            def get(self, key, default=None):
+                payload_reads.append(key)
+                return super().get(key, default)
+
+        event = {
+            **POISON_EVENT,
+            "id": 77001,
+            "type": "task:legacy",
+            "payload": ObservedPayload(
+                {
+                    "task_id": "private-legacy-task",
+                    "secret_marker": "must-not-reach-output",
+                }
+            ),
+        }
+        budget = [1]
+
+        def client_factory(*args, **kwargs):
+            return _FakeClient(event, budget, *args, **kwargs)
+
+        argv = [
+            "--url",
+            "http://fake",
+            "--token",
+            "x",
+            "listen",
+            "--agent",
+            "coder",
+            "--once",
+        ]
+        if handlers:
+            argv.extend(
+                [
+                    "--on",
+                    "task:current",
+                    f'{sys.executable} -c "raise SystemExit(0)"',
+                ]
+            )
+        if ack_on_receive:
+            argv.append("--ack-on-receive")
+
+        runner = CliRunner()
+        with (
+            mock.patch("client.cli.httpx.Client", side_effect=client_factory),
+            mock.patch("client.cli.json.loads", return_value=event),
+            mock.patch("client.cli.json.dumps", wraps=json.dumps) as dumps_mock,
+            mock.patch("client.cli._post_ack", return_value=True) as ack_mock,
+            mock.patch("client.cli._post_fail") as fail_mock,
+        ):
+            result = runner.invoke(
+                cli,
+                argv,
+                obj={"url": "http://fake", "token": "x"},
+            )
+        payload_dump_count = sum(
+            call.args and call.args[0] is event["payload"]
+            for call in dumps_mock.call_args_list
+        )
+        return result, ack_mock, fail_mock, payload_dump_count, payload_reads
+
+    def test_unmatched_handler_redacts_payload_without_mutating_event(self):
+        result, ack_mock, fail_mock, payload_dump_count, payload_reads = (
+            self.invoke_listener()
+        )
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("task:legacy id=77001 task_id=-", result.output)
+        self.assertIn("Payload: [redacted: no matching handler]", result.output)
+        self.assertNotIn("private-legacy-task", result.output)
+        self.assertNotIn("must-not-reach-output", result.output)
+        self.assertIn("No handler configured; leaving event unacked", result.output)
+        self.assertEqual(payload_reads, [])
+        self.assertEqual(payload_dump_count, 0)
+        ack_mock.assert_not_called()
+        fail_mock.assert_not_called()
+
+    def test_manual_listener_without_handlers_keeps_payload_visible(self):
+        result, ack_mock, fail_mock, payload_dump_count, payload_reads = (
+            self.invoke_listener(handlers=False)
+        )
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("private-legacy-task", result.output)
+        self.assertIn("must-not-reach-output", result.output)
+        self.assertEqual(payload_reads, ["task_id"])
+        self.assertEqual(payload_dump_count, 1)
+        ack_mock.assert_not_called()
+        fail_mock.assert_not_called()
+
+    def test_ack_on_receive_keeps_payload_visible_and_acks(self):
+        result, ack_mock, fail_mock, payload_dump_count, payload_reads = (
+            self.invoke_listener(ack_on_receive=True)
+        )
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("private-legacy-task", result.output)
+        self.assertIn("must-not-reach-output", result.output)
+        self.assertEqual(payload_reads, ["task_id"])
+        self.assertEqual(payload_dump_count, 1)
+        ack_mock.assert_called_once()
+        fail_mock.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
