@@ -28,9 +28,14 @@
   reports six pre-existing unformatted test files outside this TaskCard's allowed paths.
 - Python bytecode compilation: passes across client, server, and tests.
 - Git whitespace validation: passes.
+- Fresh Windows exact-head checkout: the three new unmatched-payload acceptance tests pass; the CI
+  Ruff selection, changed-file formatter, and bytecode compilation pass; tracked files remain clean.
+- Windows full diagnostic: 94 tests pass, one skips, and 10 subtests pass. Fourteen pre-existing
+  Windows-incompatible tests fail around POSIX handler quoting, XDG-only test setup, executable-bit
+  assertions, Bash availability, and SQLite temporary-file locking; none touches the new redaction
+  branch. The same run includes all three passing redaction acceptance tests.
 
-Pending final exact-head verification on Windows, GitHub CI, independent Codex review, and
-main-agent double-check.
+Pending GitHub CI, independent Codex review, and main-agent double-check.
 
 ## Not verified
 
