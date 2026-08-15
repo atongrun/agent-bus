@@ -167,6 +167,8 @@ def main() -> None:
                         "coder",
                         "listen",
                         "--once",
+                        "--exit-after-idle",
+                        "10",
                         "--handler-timeout",
                         "10",
                         "--on-argv",
@@ -176,6 +178,7 @@ def main() -> None:
                     check=True,
                     cwd=ROOT,
                     env=environment,
+                    timeout=30,
                 )
                 if marker.read_text(encoding="utf-8") != "hello structured 世界; & ^":
                     raise RuntimeError("structured --on-argv handler rendered incorrectly")
