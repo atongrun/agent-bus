@@ -461,10 +461,13 @@ agent-bus context add receiver \
   --select
 
 agent-bus doctor
-agent-bus listen --on task:new "opencode run --prompt {payload.prompt}"
+agent-bus listen --on-argv task:new '["opencode","run","--prompt","{payload.prompt}"]'
 ```
 
-The handler is a local runtime choice, not context data. Git, AI execution,
+The structured argv is a local runtime choice, not context data. Each JSON element remains one
+process argument even when a payload value contains spaces, Unicode, quotes, or metacharacters.
+Legacy `--on TYPE COMMAND` remains supported for existing listeners, but new runtime integrations
+should use `--on-argv`. Git, AI execution,
 workspace setup, and PR creation belong to the adapter outside Agent Bus core.
 The event is ACKed only if the handler exits with code `0`.
 

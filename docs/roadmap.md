@@ -57,7 +57,8 @@ Expected work:
 - Maintain one generic shell/script adapter example.
 - Maintain one concrete OpenCode adapter example.
 - Add examples only when they demonstrate a reusable integration pattern.
-- Document safe handler templates and payload passing.
+- Prefer structured handler argv and document legacy command templates only as a compatibility
+  surface.
 - Make adapter examples explicit about local ownership of workspace, Git, test,
   prompt, retry, and reporting behavior.
 

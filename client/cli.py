@@ -182,10 +182,66 @@ def render_command(template: str, event_data: dict) -> list[str]:
     return argv
 
 
+def parse_handler_argv(raw: str) -> tuple[str, ...]:
+    """Parse one --on-argv JSON document into an immutable argv template."""
+    try:
+        loaded = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise click.ClickException(f"--on-argv must be valid JSON: {exc}") from exc
+
+    if not isinstance(loaded, list):
+        raise click.ClickException("--on-argv must be a JSON array")
+    if not loaded:
+        raise click.ClickException("--on-argv array must not be empty")
+    if not all(isinstance(item, str) for item in loaded):
+        raise click.ClickException("--on-argv array elements must all be strings")
+    return tuple(loaded)
+
+
+def render_argv_template(template: tuple[str, ...], event_data: dict) -> list[str]:
+    """Render a structured argv template without command-string parsing."""
+    argv: list[str] = []
+    for token in template:
+        m = _PLACEHOLDER_RE.fullmatch(token)
+        if m:
+            argv.append(_lookup_template_value(event_data, m.group(1).strip()))
+        else:
+            argv.append(
+                _PLACEHOLDER_RE.sub(
+                    lambda mm: _lookup_template_value(event_data, mm.group(1).strip()),
+                    token,
+                )
+            )
+    return argv
+
+
+def _build_handler_map(
+    legacy_handlers: tuple[tuple[str, str], ...],
+    argv_handlers: tuple[tuple[str, str], ...],
+) -> dict[str, tuple[str, str | tuple[str, ...]]]:
+    handler_map: dict[str, tuple[str, str | tuple[str, ...]]] = {}
+
+    for event_type, command in legacy_handlers:
+        if event_type in handler_map:
+            raise click.ClickException(
+                f"duplicate handler registration for event type {event_type!r}"
+            )
+        handler_map[event_type] = ("command", command)
+
+    for event_type, raw_argv in argv_handlers:
+        if event_type in handler_map:
+            raise click.ClickException(
+                f"duplicate handler registration for event type {event_type!r}"
+            )
+        handler_map[event_type] = ("argv", parse_handler_argv(raw_argv))
+
+    return handler_map
+
+
 def run_handler(argv: list[str], timeout: int, workdir: str | None) -> bool:
     """Run a handler command (real argv, no shell). Success is exit code 0 before timeout."""
     started = time.monotonic()
-    click.echo(f"  Handler start: {argv}")
+    click.echo(f"  Handler start: {json.dumps(argv, ensure_ascii=True)}")
     try:
         completed = subprocess.run(
             argv,
@@ -978,7 +1034,15 @@ def doctor(ctx, agent, send_test, listener):
     nargs=2,
     multiple=True,
     metavar="TYPE COMMAND",
-    help="Run COMMAND for events of TYPE. ACK happens only on success.",
+    help="Run legacy COMMAND for events of TYPE. ACK happens only on success.",
+)
+@click.option(
+    "--on-argv",
+    "argv_handlers",
+    nargs=2,
+    multiple=True,
+    metavar="TYPE ARGV_JSON",
+    help="Run structured JSON argv array for events of TYPE. ACK happens only on success.",
 )
 @click.option(
     "--handler-timeout",
@@ -1022,6 +1086,7 @@ def listen(
     ctx,
     agent,
     handlers,
+    argv_handlers,
     handler_timeout,
     workdir,
     ack_on_receive,
@@ -1048,7 +1113,7 @@ def listen(
     if legacy_ack is not None:
         ack_on_receive = legacy_ack
 
-    handler_map = dict(handlers)
+    handler_map = _build_handler_map(handlers, argv_handlers)
     stream_read_timeout = (
         float(exit_after_idle)
         if exit_after_idle
@@ -1118,13 +1183,13 @@ def listen(
         click.echo(
             f"[{now}] {event_data['type']} id={event_id} task_id={task_id or '-'}"
         )
-        click.echo(f"  From: {event_data['from_agent']} → To: {event_data['to_agent']}")
+        click.echo(f"  From: {event_data['from_agent']} -> To: {event_data['to_agent']}")
         click.echo(f"  Status: {event_data['status']}")
         if redact_unmatched_payload:
             click.echo("  Payload: [redacted: no matching handler]")
         else:
             click.echo(
-                f"  Payload: {json.dumps(event_data['payload'], ensure_ascii=False)}"
+                f"  Payload: {json.dumps(event_data['payload'], ensure_ascii=True)}"
             )
         click.echo("")
 
@@ -1149,7 +1214,11 @@ def listen(
 
         if handler:
             try:
-                command = render_command(handler, event_data)
+                handler_mode, handler_template = handler
+                if handler_mode == "argv":
+                    command = render_argv_template(handler_template, event_data)
+                else:
+                    command = render_command(handler_template, event_data)
             except KeyError as exc:
                 click.echo(f"  Handler template missing field: {exc}", err=True)
                 record_handler_failure(f"Handler template missing field: {exc}")

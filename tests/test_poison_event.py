@@ -145,6 +145,11 @@ def _always_fail_handler(marker_path):
     return f'{sys.executable} -c "{py}"'
 
 
+def _always_fail_handler_argv(marker_path):
+    py = f"import sys;open({marker_path!r}, 'a').write('run\\n');sys.exit(7)"
+    return json.dumps([sys.executable, "-c", py])
+
+
 class PoisonEventFailPersistenceTests(unittest.TestCase):
     """Tests for server-side fail persistence (ABUS-SERVER-FAIL-PERSIST-008)."""
 
@@ -269,6 +274,49 @@ class PoisonEventFailPersistenceTests(unittest.TestCase):
             )
             self.assertEqual(kwargs["expected_retry_count"], 0)
             self.assertEqual(kwargs["max_attempts"], 3)
+
+    def test_structured_argv_handler_failure_records_fail_without_ack(self):
+        """A non-zero --on-argv handler remains unacked and records failure."""
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import MagicMock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = str(Path(tmp) / "runs.txt")
+            fail_mock = MagicMock(return_value={"status": "pending", "retry_count": 1})
+            budget = [1]
+
+            def client_factory(*args, **kwargs):
+                return _FakeClient(POISON_EVENT, budget, *args, **kwargs)
+
+            runner = CliRunner()
+            with (
+                mock.patch("client.cli.httpx.Client", side_effect=client_factory),
+                mock.patch("client.cli._post_ack", return_value=True) as ack_mock,
+                mock.patch("client.cli._post_fail", side_effect=fail_mock),
+            ):
+                result = runner.invoke(
+                    cli,
+                    [
+                        "listen",
+                        "--agent",
+                        "coder",
+                        "--once",
+                        "--max-event-attempts",
+                        "3",
+                        "--handler-timeout",
+                        "5",
+                        "--on-argv",
+                        "test:poison-sim",
+                        _always_fail_handler_argv(marker),
+                    ],
+                    obj={"url": "http://fake", "token": "x"},
+                )
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            self.assertEqual(Path(marker).read_text().count("run"), 1)
+            fail_mock.assert_called_once()
+            ack_mock.assert_not_called()
 
     def test_post_fail_not_called_on_success(self):
         """_post_fail must NOT be called when the handler succeeds."""
