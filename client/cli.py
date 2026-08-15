@@ -1183,7 +1183,7 @@ def listen(
         click.echo(
             f"[{now}] {event_data['type']} id={event_id} task_id={task_id or '-'}"
         )
-        click.echo(f"  From: {event_data['from_agent']} → To: {event_data['to_agent']}")
+        click.echo(f"  From: {event_data['from_agent']} -> To: {event_data['to_agent']}")
         click.echo(f"  Status: {event_data['status']}")
         if redact_unmatched_payload:
             click.echo("  Payload: [redacted: no matching handler]")

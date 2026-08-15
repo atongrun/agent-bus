@@ -23,6 +23,9 @@ rendered one existing argv token at a time, and passed to the unchanged
   conflicts, and non-zero handler failure without ACK.
 - The installed-client smoke exercises a disposable structured delivery on Windows and verifies the
   exact Unicode/metacharacter argument written by the child process.
+- The smoke exposed a pre-handler Windows default-codepage failure in the decorative event-direction
+  arrow. That one console marker is now ASCII so the listener reaches the handler without changing
+  event data, protocol encoding, or child-process environment.
 - Server code, API/database schemas, authentication, SSE, delivery, ACK/fail/requeue transitions,
   PowerShell adapters, dependencies and deployment are unchanged. No retained business event or
   payload was read or operated.
