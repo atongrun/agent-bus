@@ -15,6 +15,14 @@ Read [`README.md`](README.md), [`docs/protocol.md`](docs/protocol.md),
 [`docs/worker.md`](docs/worker.md), and [`docs/recommended-practices.md`](docs/recommended-practices.md)
 before changing delivery behavior.
 
+The current P1-3 client addition introduces the local
+`agent-bus.listen.on-argv.v1` consumer contract. `listen --on-argv TYPE ARGV_JSON` validates a
+non-empty string array before connecting, replaces placeholders within existing argv tokens, and
+launches the result through the same `shell=False` process boundary. Legacy `--on TYPE COMMAND`
+remains supported so Agent Bus can be upgraded before Agent Workflow. Server protocol/storage,
+delivery, durable failure, ACK and requeue behavior are unchanged. The pinned peer contract is
+`awf.handler-argv.v1`; upgrade Bus before Workflow and roll back Workflow before Bus.
+
 ## Latest Dogfood Evidence
 
 - The v0.3 client reconnect repair is merged on `master`. A daemon listener now uses a bounded idle

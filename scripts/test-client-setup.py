@@ -129,6 +129,56 @@ def main() -> None:
                     cwd=ROOT,
                     env=environment,
                 )
+                marker = temporary / "structured-argv.txt"
+                subprocess.run(
+                    [
+                        os.fspath(executable),
+                        "--context",
+                        "coder",
+                        "send",
+                        "--to",
+                        "coder",
+                        "--type",
+                        "smoke:argv",
+                        "--payload",
+                        json.dumps({"prompt": "hello structured 世界; & ^"}),
+                    ],
+                    check=True,
+                    cwd=ROOT,
+                    env=environment,
+                )
+                handler_argv = json.dumps(
+                    [
+                        sys.executable,
+                        "-c",
+                        (
+                            "import pathlib,sys;"
+                            "pathlib.Path(sys.argv[1]).write_text("
+                            "sys.argv[2], encoding='utf-8')"
+                        ),
+                        os.fspath(marker),
+                        "{payload.prompt}",
+                    ]
+                )
+                subprocess.run(
+                    [
+                        os.fspath(executable),
+                        "--context",
+                        "coder",
+                        "listen",
+                        "--once",
+                        "--handler-timeout",
+                        "10",
+                        "--on-argv",
+                        "smoke:argv",
+                        handler_argv,
+                    ],
+                    check=True,
+                    cwd=ROOT,
+                    env=environment,
+                )
+                if marker.read_text(encoding="utf-8") != "hello structured 世界; & ^":
+                    raise RuntimeError("structured --on-argv handler rendered incorrectly")
                 print("Cross-platform client setup acceptance passed.")
             finally:
                 server.terminate()

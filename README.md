@@ -195,12 +195,14 @@ For example, after OpenCode is installed and configured on the receiver, a
 demonstration listener can invoke it with:
 
 ```bash
-agent-bus listen --on task:new "opencode run {payload.prompt}"
+agent-bus listen --on-argv task:new '["opencode","run","{payload.prompt}"]'
 ```
 
-The handler command is local configuration. Agent Bus does not clone or select
+The JSON array is local configuration. Each element stays one argv token and the
+handler is launched without a shell. Legacy `--on TYPE COMMAND` remains available
+for existing listeners during the compatibility window. Agent Bus does not clone or select
 repositories, construct prompts, run tests, commit changes, push branches, or
-open pull requests. A single `listen --on` command is useful for demonstrations;
+open pull requests. A single structured listener is useful for demonstrations;
 a durable Worker Runtime needs its own workspace policy, idempotency, result
 events, and failure handling. Start with [`docs/worker.md`](docs/worker.md) and
 adapt the reference files under [`examples/`](examples/).

@@ -6,6 +6,12 @@ GitHub.
 
 ## [Unreleased]
 
+### Added
+
+- `agent-bus listen --on-argv TYPE ARGV_JSON` accepts an exact local JSON argv template and
+  renders payload placeholders token-by-token without command-string or shell parsing. The legacy
+  `--on TYPE COMMAND` form remains available for compatibility.
+
 ### Changed
 
 - Daemon listeners now reconnect after a bounded idle read timeout so unacknowledged

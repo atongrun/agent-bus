@@ -5,10 +5,20 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from click import ClickException
 from click.testing import CliRunner
 
-from client.cli import _load_payload, render_command, run_handler, send
+from client.cli import (
+    _load_payload,
+    cli,
+    parse_handler_argv,
+    render_argv_template,
+    render_command,
+    run_handler,
+    send,
+)
 
 
 class CliHelperTests(unittest.TestCase):
@@ -53,6 +63,82 @@ class CliHelperTests(unittest.TestCase):
             rendered,
             ["C:\\Program Files\\Git\\python.exe", "role", "--branch", "awf/x"],
         )
+
+    def test_structured_argv_renders_tokens_without_command_parsing(self):
+        event = {
+            "payload": {
+                "prompt": 'hello 世界; echo "quoted"',
+                "script": "C:\\Program Files\\Agent Bus\\run task.py",
+                "branch": "feature/with space",
+            },
+        }
+
+        template = parse_handler_argv(
+            json.dumps(
+                [
+                    "C:\\Program Files\\Python\\python.exe",
+                    "{payload.script}",
+                    "--prompt",
+                    "{payload.prompt}",
+                    "branch={payload.branch}",
+                    "literal&caret^pipe|",
+                ]
+            )
+        )
+        rendered = render_argv_template(template, event)
+
+        self.assertEqual(
+            rendered,
+            [
+                "C:\\Program Files\\Python\\python.exe",
+                "C:\\Program Files\\Agent Bus\\run task.py",
+                "--prompt",
+                'hello 世界; echo "quoted"',
+                "branch=feature/with space",
+                "literal&caret^pipe|",
+            ],
+        )
+
+    def test_structured_argv_rejects_invalid_documents(self):
+        invalid_documents = [
+            '"python"',
+            "[]",
+            "[1]",
+            '["python", 2]',
+            "{",
+        ]
+
+        for raw in invalid_documents:
+            with self.subTest(raw=raw):
+                with self.assertRaises(ClickException):
+                    parse_handler_argv(raw)
+
+    def test_conflicting_handler_registrations_fail_before_connect(self):
+        runner = CliRunner()
+
+        with mock.patch("client.cli.httpx.Client") as client_mock:
+            result = runner.invoke(
+                cli,
+                [
+                    "--url",
+                    "http://fake",
+                    "--token",
+                    "x",
+                    "listen",
+                    "--agent",
+                    "coder",
+                    "--on",
+                    "task:new",
+                    "true",
+                    "--on-argv",
+                    "task:new",
+                    '["true"]',
+                ],
+            )
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("duplicate handler registration", result.output)
+        client_mock.assert_not_called()
 
     def test_render_command_fails_on_missing_field(self):
         with self.assertRaises(KeyError):
