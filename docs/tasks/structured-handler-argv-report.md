@@ -26,6 +26,8 @@ rendered one existing argv token at a time, and passed to the unchanged
 - The smoke exposed a pre-handler Windows default-codepage failure in the decorative event-direction
   arrow. That one console marker is now ASCII so the listener reaches the handler without changing
   event data, protocol encoding, or child-process environment.
+- Matched-listener payload display uses JSON Unicode escapes, keeping default Windows consoles
+  representable while the unescaped in-memory value still reaches the structured child argv.
 - Server code, API/database schemas, authentication, SSE, delivery, ACK/fail/requeue transitions,
   PowerShell adapters, dependencies and deployment are unchanged. No retained business event or
   payload was read or operated.

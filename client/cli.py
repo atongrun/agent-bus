@@ -1189,7 +1189,7 @@ def listen(
             click.echo("  Payload: [redacted: no matching handler]")
         else:
             click.echo(
-                f"  Payload: {json.dumps(event_data['payload'], ensure_ascii=False)}"
+                f"  Payload: {json.dumps(event_data['payload'], ensure_ascii=True)}"
             )
         click.echo("")
 
