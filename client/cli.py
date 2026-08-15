@@ -241,7 +241,7 @@ def _build_handler_map(
 def run_handler(argv: list[str], timeout: int, workdir: str | None) -> bool:
     """Run a handler command (real argv, no shell). Success is exit code 0 before timeout."""
     started = time.monotonic()
-    click.echo(f"  Handler start: {argv}")
+    click.echo(f"  Handler start: {json.dumps(argv, ensure_ascii=True)}")
     try:
         completed = subprocess.run(
             argv,

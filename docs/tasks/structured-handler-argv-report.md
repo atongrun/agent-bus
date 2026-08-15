@@ -28,6 +28,8 @@ rendered one existing argv token at a time, and passed to the unchanged
   event data, protocol encoding, or child-process environment.
 - Matched-listener payload display uses JSON Unicode escapes, keeping default Windows consoles
   representable while the unescaped in-memory value still reaches the structured child argv.
+- Handler-start logging applies the same display-only escaping to the argv copy; the list supplied
+  to `subprocess.run` is not rewritten.
 - Server code, API/database schemas, authentication, SSE, delivery, ACK/fail/requeue transitions,
   PowerShell adapters, dependencies and deployment are unchanged. No retained business event or
   payload was read or operated.
