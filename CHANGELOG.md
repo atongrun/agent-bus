@@ -6,6 +6,8 @@ GitHub.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-22
+
 ### Added
 
 - `agent-bus listen --on-argv TYPE ARGV_JSON` accepts an exact local JSON argv template and
@@ -79,6 +81,7 @@ private network.
   Worker Runtime, workflow/Git/prompt/AI execution, a UI, or an external queue.
 - v0.2.0 is not published to PyPI; clients install from a source checkout.
 
-[Unreleased]: https://github.com/atongrun/agent-bus/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/atongrun/agent-bus/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/atongrun/agent-bus/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/atongrun/agent-bus/releases/tag/v0.3.0
 [0.2.0]: https://github.com/atongrun/agent-bus/releases/tag/v0.2.0

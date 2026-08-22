@@ -1,6 +1,6 @@
 # Agent Bus Installation Guide
 
-This guide covers the v0.2 lightweight deployment paths: one server process
+This guide covers the v0.3.1 lightweight deployment paths: one server process
 installed through systemd or Docker Compose, plus foreground CLI listeners or
 external adapters on each agent machine.
 

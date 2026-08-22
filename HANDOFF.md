@@ -4,6 +4,18 @@
 > the live Git ref. This file contains no private endpoint, credential, host, personal path, or event
 > payload data.
 
+## v0.3.1 Compatibility Release
+
+The reviewed `v0.3.1` release candidate packages the current client-only `Unreleased` work without
+changing Agent Bus server/API/database/auth or ACK semantics. It includes the merged unmatched
+handler payload redaction, bounded stale-SSE reconnect, and the
+`agent-bus.listen.on-argv.v1` structured handler consumer. `listen --on-argv TYPE ARGV_JSON` remains
+the required Agent Workflow compatibility capability; legacy `--on` remains only for existing
+clients.
+
+The release metadata bump changes package/API version reporting only. It does not deploy or upgrade
+any live server, operate events/queues, add Workflow/provider awareness, or change durable data.
+
 ## Product Boundary
 
 Agent Bus is a durable, at-least-once event relay. It owns persistence, recipient-scoped delivery,

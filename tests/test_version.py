@@ -11,16 +11,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class VersionConsistencyTests(unittest.TestCase):
-    def test_package_and_api_versions_match_v0_3_0(self):
+    def test_package_and_api_versions_match_v0_3_1(self):
         project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
-        self.assertEqual(project["project"]["version"], "0.3.0")
-        self.assertEqual(app.version, "0.3.0")
+        self.assertEqual(project["project"]["version"], "0.3.1")
+        self.assertEqual(app.version, "0.3.1")
 
     def test_lockfile_carries_project_version(self):
         lockfile = (ROOT / "uv.lock").read_text(encoding="utf-8")
 
-        self.assertIn('name = "agent-bus"\nversion = "0.3.0"', lockfile)
+        self.assertIn('name = "agent-bus"\nversion = "0.3.1"', lockfile)
 
 
 if __name__ == "__main__":

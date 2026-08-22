@@ -95,11 +95,11 @@ installation, see the
 
 ### 2. Install the Clients
 
-Agent Bus is not published on PyPI. Install the v0.3.0 client from the
+Agent Bus is not published on PyPI. Install the v0.3.1 client from the
 repository with [uv](https://docs.astral.sh/uv/):
 
 ```console
-git clone https://github.com/atongrun/agent-bus.git
+git clone --branch v0.3.1 --depth 1 https://github.com/atongrun/agent-bus.git
 cd agent-bus
 uv tool install --python 3.12 .
 agent-bus setup

@@ -1,6 +1,6 @@
 [project]
 name = "agent-bus"
-version = "0.3.0"
+version = "0.3.1"
 description = "Agent Event Bus — cross-machine durable event relay for AI agent collaboration"
 readme = "README.md"
 requires-python = ">=3.11"
